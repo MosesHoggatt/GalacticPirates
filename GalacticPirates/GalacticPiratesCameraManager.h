@@ -6,10 +6,6 @@
 #include "Camera/PlayerCameraManager.h"
 #include "GalacticPiratesCameraManager.generated.h"
 
-/**
- *  Basic First Person camera manager.
- *  Limits min/max look pitch.
- */
 UCLASS()
 class AGalacticPiratesCameraManager : public APlayerCameraManager
 {
@@ -17,6 +13,5 @@ class AGalacticPiratesCameraManager : public APlayerCameraManager
 	
 public:
 
-	/** Constructor */
 	AGalacticPiratesCameraManager();
 };

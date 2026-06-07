@@ -1,0 +1,434 @@
+﻿# WalkableShip System - Technical Specification
+
+**Project:** Galactic Pirates  
+**System:** 6DOF Multiplayer Ship with Interior Player Movement  
+**Version:** 1.0
+
+---
+
+## 1. System Overview
+
+### Core Requirements
+- Medium freighter with walkable interior
+- Full 6DOF physics without gimbal lock
+- Multiplayer: server-authoritative ship physics, client-authoritative camera
+- Players spawn aboard, no disembarkation
+- Ship-relative gravity and camera for all players
+- Single pilot system via helm interaction
+
+### Network Model
+- **Server Authority:** Ship physics, position, rotation, pilot assignment, player tracking
+- **Client Authority:** Individual camera rotation (local yaw/pitch relative to ship)
+- **Replication:** Ship transform via APawn system, pilot state, player list
+
+---
+
+## 2. Class: AWalkableShip (APawn)
+
+### Purpose
+Main ship actor that serves as container for players and provides piloting interface.
+
+### Component Structure
+- **Hull Mesh**: Visual exterior only, no collision
+- **Interior Mesh**: Collision-enabled floor that acts as MovementBase for all players
+- **Movement System**: Custom 6DOF physics component
+- **Helm**: Interaction point for pilot assignment
+
+### State Management
+- Tracks list of all characters currently aboard
+- Maintains reference to current pilot (if any)
+- Stores physics configuration: mass (~50,000 kg), thrust powers (forward/strafe/vertical), rotational torque
+- Configurable inertial dampening (0-1 scale)
+
+### Responsibilities
+- Register/unregister players as they board
+- Assign and release pilot on helm interaction
+- Receive pilot input from network and route to movement system
+- Validate pilot authority on all control inputs
+- Notify all aboard players when ship rotation changes (for camera updates)
+
+### Network Behavior
+- Transform replicates automatically via APawn
+- Pilot state replicates to all clients with RepNotify
+- Validates that only current pilot can send control input
+
+---
+
+## 3. Class: UShipMovementComponent (UActorComponent)
+
+### Purpose
+Handles realistic 6DOF physics simulation without gimbal lock.
+
+### Physics Configuration
+- Separate thrust power for forward, strafe, and vertical axes
+- Rotational torque for pitch/yaw/roll
+- Ship mass for force calculations
+- Separate dampening factors for translation and rotation (0-1)
+- Max velocity caps for both linear and angular motion
+
+### Physics State (Runtime)
+- Current linear velocity vector (m/s)
+- Current angular velocity vector (degrees/s)
+- Both maintained only on server
+
+### Core Responsibilities
+- Accept input vectors for thrust (-1 to 1 on X/Y/Z axes) and rotation (-1 to 1 for pitch/yaw/roll)
+- Convert thrust input to forces in ship-local space, transform to world space
+- Apply Newtonian physics: F=ma for translation, torque/inertia for rotation
+- Use quaternion mathematics for rotation to prevent gimbal lock
+- Apply dampening to velocities each frame (exponential decay)
+- Clamp velocities to configured maximums
+- Update owner's world transform based on integrated velocities
+
+### Quaternion Rotation Approach
+- Angular velocity stored as degrees per second vector
+- Converted to quaternion delta rotation each frame
+- Applied via quaternion multiplication: `NewRotation = DeltaRotation * CurrentRotation`
+- Guarantees no gimbal lock regardless of ship orientation
+
+### Network Behavior
+- Runs only on server
+- No client-side prediction
+- Ticks in PrePhysics group (before character movement)
+
+---
+
+## 4. Class: UHelmComponent (USceneComponent)
+
+### Purpose
+Provides interaction point for players to take/release ship control.
+
+### Configuration
+- Relative position/rotation where pilot should be locked (optional)
+- Input Mapping Context (IMC) containing ship control bindings
+- IMC priority level
+
+### State
+- Whether helm is currently occupied
+
+### Responsibilities
+- Receive pilot control requests from clients
+- Validate requests with ship owner
+- Add/remove pilot IMC from player controller when assigned/released
+- Handle pilot disconnection gracefully
+
+### Interaction Flow
+1. Player interacts → sends request to server
+2. Server validates and assigns pilot via ship
+3. Pilot state replicates to all clients
+4. Pilot's client receives RepNotify and adds ship control IMC
+5. Pilot inputs route through character to ship
+6. Release reverses the process
+
+---
+
+## 5. Class: AFirstPersonCharacter (Modified)
+
+### New Configuration
+- Editor-settable reference to ship to spawn aboard
+- Reference to currently boarded ship (replicated)
+- Piloting state flag (replicated)
+- Local camera angles relative to ship (NOT replicated - client authoritative)
+
+### Component Changes
+- Replace standard camera with quaternion-based camera system
+
+### Boarding Behavior
+- On spawn, if ship reference set, position inside ship and register
+- Set ship's interior mesh as movement base (engine handles attachment)
+- Configure character movement: disable auto-rotation toward velocity, ignore controller rotation
+- Keep character upright relative to ship's local up direction
+
+### Camera Management
+- Every frame, read ship's current up vector from replicated transform
+- Update camera's reference up direction
+- Prevents camera yaw drift when ship rotates
+- Each client maintains their own camera orientation
+
+### Pilot Input Handling
+- When piloting, capture ship control inputs from IMC
+- Accumulate thrust and rotation input vectors locally
+- Send to server via unreliable RPC (high frequency, 20-60 Hz)
+- Server validates pilot authority and applies to ship
+
+### Look Input Handling
+- Override default controller rotation input
+- Store yaw/pitch as ship-local angles (not replicated)
+- Apply to camera system relative to ship's current orientation
+
+### Network Behavior
+- Ship reference and pilot state replicate
+- Camera angles do NOT replicate (pure client-side)
+- Pilot input sent via unreliable RPC
+
+---
+
+## 6. Class: UQuatCamera (UCameraComponent)
+
+### Purpose
+Camera that supports arbitrary "up" directions without gimbal lock, making ship's up feel like world up to player.
+
+### Configuration
+- Reference up direction vector (updated from ship)
+- Transition speed for smoothing up direction changes
+- Pitch clamp limits (typically ±89 degrees)
+
+### Internal State (Not Replicated)
+- Yaw angle relative to current up direction
+- Pitch angle relative to current up direction
+
+### Core Concept
+Traditional Euler cameras fail when up direction changes (ship rotates) because yaw/pitch are defined relative to a fixed up. This camera:
+- Stores yaw/pitch relative to arbitrary up direction
+- When up direction changes, decomposes current world rotation back to yaw/pitch using NEW up
+- Prevents drift while maintaining visual stability
+
+### Responsibilities
+- Accept new up directions (from ship rotation)
+- When up changes: preserve world orientation but recalculate local angles
+- Accept look input as delta yaw/pitch
+- Compute world rotation using quaternion math:
+  - Create base frame aligned with up direction
+  - Apply yaw rotation around up
+  - Apply pitch rotation around resulting right axis
+  - Combine via quaternion multiplication
+- Maintain smooth transitions when up direction changes rapidly
+
+### Drift Prevention Algorithm
+When ship rotates and up direction changes:
+1. Store current camera world rotation (as quaternion)
+2. Update up direction reference vector
+3. Extract forward vector from stored world rotation
+4. Project forward onto plane perpendicular to new up
+5. Calculate new yaw: angle between projected forward and base forward
+6. Calculate new pitch: angle between projected forward and actual forward
+7. Store new yaw/pitch values
+
+Result: Camera maintains same world-space look direction, but yaw/pitch stay accurate relative to ship.
+
+### Network Behavior
+- Completely client-side, no replication
+- Each player controls their own camera independently
+
+---
+
+## 7. Network Architecture
+
+### Authority Distribution
+
+**Server Owns:**
+- Ship physics state (velocity, angular velocity)
+- Ship world transform (position, rotation)
+- Pilot assignment
+- Player aboard tracking
+- All control input validation
+
+**Client Owns:**
+- Their own camera rotation
+- Their local yaw/pitch relative to ship
+- Look input (never sent to server)
+
+**Shared (Replicated):**
+- Ship transform (server → all clients)
+- Pilot identity (server → all clients)
+- Player aboard list (server → all clients)
+
+### Data Flow: Pilot Assignment
+
+```
+Client interaction request
+→ Reliable RPC to server
+→ Server validates and assigns
+→ Replicated pilot state to all clients
+→ RepNotify on pilot's client adds input context
+→ RepNotify on other clients updates visuals
+```
+
+### Data Flow: Ship Control
+
+```
+Pilot client: Enhanced Input captures controls
+→ Accumulate thrust/rotation vectors locally
+→ Unreliable RPC to server (20-60 Hz)
+→ Server validates pilot identity
+→ Server applies to movement component
+→ Movement component integrates physics
+→ Ship transform updates
+→ APawn replication sends to all clients (10-100 Hz)
+→ Clients interpolate visually
+```
+
+### Data Flow: Camera Updates
+
+```
+Every frame on every client:
+→ Read ship's replicated up vector
+→ Update camera's reference up
+→ Camera decomposes world rotation (prevents drift)
+→ Apply local look input
+→ Recompute world rotation via quaternions
+→ Update camera component transform
+→ Zero network traffic (pure client-side)
+```
+
+### RPC Strategy
+- **Reliable:** Pilot assignment/release (critical state)
+- **Unreliable:** Movement input (high frequency, acceptable loss)
+- **Validation:** All control RPCs verify sender authority
+
+### Bandwidth Estimates
+- Pilot input: ~0.5-1.5 KB/s per pilot
+- Ship transform: ~0.4-4 KB/s per client (varies by update rate)
+- Camera: 0 KB/s (client-local)
+- Total per player: ~1-2 KB/s
+
+---
+
+## 8. Key Technical Challenges & Solutions
+
+### Challenge: Gimbal Lock
+
+**Problem:** Traditional Euler angle rotations break at certain orientations (e.g., looking straight up).
+
+**Solution:**
+- Store all rotations as quaternions
+- Never use Euler angles in update loops
+- Convert to quaternion, apply rotation, convert back only for display
+- Rotation composition via quaternion multiplication
+
+### Challenge: Camera Yaw Drift
+
+**Problem:** When ship rotates, camera's yaw/pitch are defined relative to ship's up. If up changes but yaw/pitch don't adjust, they become meaningless.
+
+**Solution:**
+- When up direction changes, maintain camera's world rotation
+- Decompose that world rotation back to yaw/pitch relative to NEW up
+- Use atan2 for angle extraction (handles all cases)
+- Result: Yaw/pitch always meaningful relative to current ship orientation
+
+### Challenge: Movement Base Rotation
+
+**Problem:** Players need to rotate with ship but stay visually upright.
+
+**Solution:**
+- Use engine's MovementBase system (automatic attachment)
+- Character inherits ship rotation via base
+- Manually override character's body rotation to stay upright relative to ship's local up
+- Camera handles arbitrary orientation via quaternion system
+
+### Challenge: Network Synchronization
+
+**Problem:** Pilot inputs on client need to control ship on server smoothly.
+
+**Solution:**
+- Client sends input, not positions (server authoritative)
+- Unreliable RPCs for input (high frequency acceptable)
+- Server validates and applies to physics
+- APawn replication handles transform sync
+- No client prediction (acceptable for large ship physics)
+
+---
+
+## 9. Implementation Sequence
+
+### Phase 1: Foundation
+- Ship movement component with 6DOF physics
+- Ship pawn with component structure
+- Direct input testing (no networking)
+- Verify quaternion rotation works at all orientations
+
+### Phase 2: Camera
+- Quaternion camera component
+- Integration with character
+- Test camera behavior as ship rotates
+- Verify no drift or gimbal lock
+
+### Phase 3: Player Integration
+- Boarding system with movement base
+- Character stays upright on rotating ship
+- Multiple players walking around interior
+
+### Phase 4: Pilot System
+- Helm component
+- Pilot assignment in single player
+- Input routing to ship controls
+
+### Phase 5: Networking
+- Add all replication properties
+- Implement control RPCs
+- Test with 2-3 clients
+- Verify authority model
+
+### Phase 6: Refinement
+- Input validation and security
+- Edge case handling
+- Performance optimization
+- Full multiplayer testing
+
+---
+
+## 10. Testing Requirements
+
+### Functional Tests
+- Character spawns aboard ship at configured location
+- Character can walk around interior freely
+- Camera looks in all directions without artifacts
+- Helm interaction assigns pilot correctly
+- Only pilot can control ship
+- All 6DOF controls respond properly
+- Dampening values produce expected behavior (0 = drift forever, 1 = instant stop)
+- Ship rotation doesn't cause camera yaw to drift
+- Helm release returns control properly
+
+### Multiplayer Tests
+- Multiple players on same ship
+- Only pilot controls, others observe
+- Pilot assignment visible to all clients
+- Ship movement smooth on all clients
+- Camera rotations independent per player
+- Pilot disconnect handled gracefully
+- Input latency acceptable (<100ms)
+- Ship destruction cleans up references
+
+### Stress Tests
+- Ship rotates 360° on all axes continuously
+- Camera functions when ship is upside down, sideways, etc.
+- Rapid pilot changes don't break state
+- Velocity limits enforced correctly
+- Multiple ships with multiple players per ship
+
+---
+
+## 11. System Constraints
+
+### Networking
+- Server authoritative for ship physics (no client prediction)
+- Acceptable for medium/large ships (not twitch-response fighters)
+- Relies on APawn's built-in transform replication
+
+### Movement
+- Characters cannot leave ship (by design for this phase)
+- Single pilot per ship
+- Gravity always "down" relative to ship (no variable gravity zones)
+
+### Performance
+- Physics simulation: <0.05ms per ship per frame
+- Camera updates: <0.001ms per player per frame
+- Supports 10+ ships with 50+ total players
+
+---
+
+## 12. Future Extensions (Out of Scope)
+
+- Disembarkation system with airlocks
+- Multiple control stations (engineering, weapons, etc.)
+- Ship-to-ship combat and damage
+- Variable gravity zones in ship interior
+- NPC crew AI
+- Client-side prediction for ship movement
+
+---
+
+**End of Specification**
+
+This specification defines all components and their interactions at a conceptual level, allowing implementation flexibility while ensuring all required functionality is addressed.
