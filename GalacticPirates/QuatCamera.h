@@ -25,10 +25,16 @@ public:
 	void SetReferenceUpDirection(const FVector& NewUp, bool bInstant = false);
 
 	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
+	void SetReferenceOrientation(const FQuat& NewFrame, bool bInstant = false);
+
+	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
 	void AddLookInput(float DeltaYaw, float DeltaPitch);
 
 	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
-	FVector GetReferenceUpDirection() const { return CurrentUpDirection; }
+	FVector GetReferenceUpDirection() const { return CurrentFrame.GetUpVector(); }
+
+	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
+	FQuat GetReferenceOrientation() const { return CurrentFrame; }
 
 	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
 	float GetCurrentYaw() const { return LocalYaw; }
@@ -39,18 +45,22 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
 	void ResetOrientation();
 
+	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
+	FVector GetPlanarLookForward() const;
+
+	FQuat GetLastComputedWorldRotation() const { return LastComputedWorldRotation; }
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 private:
-	FVector CurrentUpDirection;
-	FVector TargetUpDirection;
+	FQuat CurrentFrame;
+	FQuat TargetFrame;
 	float LocalYaw;
 	float LocalPitch;
+	FQuat LastComputedWorldRotation;
 
-	void UpdateUpDirection(float DeltaTime);
-	void PreserveWorldOrientationOnUpChange(const FVector& OldUp, const FVector& NewUp);
+	void UpdateReferenceFrame(float DeltaTime);
 	FQuat ComputeWorldRotation() const;
-	void DecomposeWorldRotation(const FQuat& WorldRotation, const FVector& UpDir, float& OutYaw, float& OutPitch) const;
 };

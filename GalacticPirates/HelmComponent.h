@@ -18,6 +18,9 @@ class GALACTICPIRATES_API UHelmComponent : public USceneComponent
 public:
 	UHelmComponent();
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Helm", meta = (ClampMin = "50.0"))
+	float InteractRange = 350.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Helm")
 	FVector PilotRelativeLocation = FVector::ZeroVector;
 
@@ -65,6 +68,10 @@ private:
 	UPROPERTY()
 	AGalacticPiratesCharacter* CurrentPilotRef = nullptr;
 
+	UPROPERTY(Transient)
+	UInputMappingContext* RuntimeShipControlIMC = nullptr;
+
+	UInputMappingContext* GetOrCreateShipControlContext(AGalacticPiratesCharacter* Pilot);
 	void AddInputContextToPilot(AGalacticPiratesCharacter* Pilot);
 	void RemoveInputContextFromPilot(AGalacticPiratesCharacter* Pilot);
 	void LockPilotToHelm(AGalacticPiratesCharacter* Pilot);

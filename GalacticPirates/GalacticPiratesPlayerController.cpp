@@ -7,6 +7,7 @@
 #include "InputMappingContext.h"
 #include "GalacticPiratesCameraManager.h"
 #include "Blueprint/UserWidget.h"
+#include "ShipHudWidget.h"
 #include "GalacticPirates.h"
 #include "Widgets/Input/SVirtualJoystick.h"
 
@@ -20,24 +21,32 @@ void AGalacticPiratesPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 
-	
-	// only spawn touch controls on local player controllers
-	if (ShouldUseTouchControls() && IsLocalPlayerController())
+	if (!IsLocalPlayerController())
 	{
-		// spawn the mobile controls widget
+		return;
+	}
+
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		ShipHud = CreateWidget<UShipHudWidget>(this);
+		if (ShipHud)
+		{
+			ShipHud->AddToViewport(20);
+		}
+	}
+
+	if (ShouldUseTouchControls())
+	{
 		MobileControlsWidget = CreateWidget<UUserWidget>(this, MobileControlsWidgetClass);
 
 		if (MobileControlsWidget)
 		{
-			// add the controls to the player screen
 			MobileControlsWidget->AddToPlayerScreen(0);
-
-		} else {
-
-			UE_LOG(LogGalacticPirates, Error, TEXT("Could not spawn mobile controls widget."));
-
 		}
-
+		else
+		{
+			UE_LOG(LogGalacticPirates, Error, TEXT("Could not spawn mobile controls widget."));
+		}
 	}
 }
 
@@ -71,6 +80,10 @@ void AGalacticPiratesPlayerController::SetupInputComponent()
 
 bool AGalacticPiratesPlayerController::ShouldUseTouchControls() const
 {
-	// are we on a mobile platform? Should we force touch?
+	if (!IsLocalPlayerController() || GetNetMode() == NM_DedicatedServer)
+	{
+		return false;
+	}
+
 	return SVirtualJoystick::ShouldDisplayTouchInterface() || bForceTouchControls;
 }

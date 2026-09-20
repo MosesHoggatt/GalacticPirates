@@ -1,22 +1,28 @@
 #include "QuatCamera.h"
+#include "ShipDebug.h"
+#include "GalacticPirates.h"
+#include "GalacticPiratesCharacter.h"
+#include "GameFramework/Pawn.h"
 
 UQuatCamera::UQuatCamera()
 {
 	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
 	bUsePawnControlRotation = false;
-	
-	CurrentUpDirection = FVector::UpVector;
-	TargetUpDirection = FVector::UpVector;
+
+	CurrentFrame = FQuat::Identity;
+	TargetFrame = FQuat::Identity;
 	LocalYaw = 0.0f;
 	LocalPitch = 0.0f;
+	LastComputedWorldRotation = FQuat::Identity;
 }
 
 void UQuatCamera::BeginPlay()
 {
 	Super::BeginPlay();
-	
-	CurrentUpDirection = FVector::UpVector;
-	TargetUpDirection = FVector::UpVector;
+
+	CurrentFrame = FQuat::Identity;
+	TargetFrame = FQuat::Identity;
 	LocalYaw = 0.0f;
 	LocalPitch = 0.0f;
 }
@@ -25,10 +31,37 @@ void UQuatCamera::TickComponent(float DeltaTime, ELevelTick TickType, FActorComp
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	UpdateUpDirection(DeltaTime);
+	APawn* OwnerPawn = Cast<APawn>(GetOwner());
+	if (!OwnerPawn || !OwnerPawn->IsLocallyControlled())
+	{
+		return;
+	}
+
+	UpdateReferenceFrame(DeltaTime);
 
 	FQuat WorldRotation = ComputeWorldRotation();
+	LastComputedWorldRotation = WorldRotation;
 	SetWorldRotation(WorldRotation);
+
+	GPSampleHelmJitter(Cast<AGalacticPiratesCharacter>(GetOwner()));
+
+	if (GPShipDebugLevel() >= 2)
+	{
+		static float TimeSinceCameraLog = 0.0f;
+		TimeSinceCameraLog += DeltaTime;
+		if (TimeSinceCameraLog >= 0.5f)
+		{
+			TimeSinceCameraLog = 0.0f;
+			UE_LOG(LogGalacticPirates, Warning,
+				TEXT("[ShipDebug][CameraTick] LocalYaw=%.2f LocalPitch=%.2f Frame=%s Computed=%s Actual=%s AttachParent=%s"),
+				LocalYaw,
+				LocalPitch,
+				*CurrentFrame.Rotator().ToCompactString(),
+				*WorldRotation.Rotator().ToCompactString(),
+				*GetComponentQuat().Rotator().ToCompactString(),
+				*GetNameSafe(GetAttachParent()));
+		}
+	}
 }
 
 void UQuatCamera::SetReferenceUpDirection(const FVector& NewUp, bool bInstant)
@@ -39,13 +72,20 @@ void UQuatCamera::SetReferenceUpDirection(const FVector& NewUp, bool bInstant)
 		NormalizedUp = FVector::UpVector;
 	}
 
-	TargetUpDirection = NormalizedUp;
+	SetReferenceOrientation(FQuat::FindBetweenNormals(FVector::UpVector, NormalizedUp), bInstant);
+}
+
+void UQuatCamera::SetReferenceOrientation(const FQuat& NewFrame, bool bInstant)
+{
+	TargetFrame = NewFrame.GetNormalized();
+	if (!TargetFrame.IsNormalized())
+	{
+		TargetFrame = FQuat::Identity;
+	}
 
 	if (bInstant)
 	{
-		FVector OldUp = CurrentUpDirection;
-		CurrentUpDirection = TargetUpDirection;
-		PreserveWorldOrientationOnUpChange(OldUp, CurrentUpDirection);
+		CurrentFrame = TargetFrame;
 	}
 }
 
@@ -64,81 +104,28 @@ void UQuatCamera::ResetOrientation()
 	LocalPitch = 0.0f;
 }
 
-void UQuatCamera::UpdateUpDirection(float DeltaTime)
+FVector UQuatCamera::GetPlanarLookForward() const
 {
-	if (CurrentUpDirection.Equals(TargetUpDirection, 0.0001f))
-	{
-		return;
-	}
-
-	FVector OldUp = CurrentUpDirection;
-
-	float Alpha = FMath::Clamp(UpTransitionSpeed * DeltaTime, 0.0f, 1.0f);
-	FVector InterpolatedUp = FMath::Lerp(CurrentUpDirection, TargetUpDirection, Alpha);
-	CurrentUpDirection = InterpolatedUp.GetSafeNormal();
-
-	PreserveWorldOrientationOnUpChange(OldUp, CurrentUpDirection);
+	const FQuat YawRotation(CurrentFrame.GetUpVector(), FMath::DegreesToRadians(LocalYaw));
+	return (YawRotation * CurrentFrame).GetForwardVector();
 }
 
-void UQuatCamera::PreserveWorldOrientationOnUpChange(const FVector& OldUp, const FVector& NewUp)
+void UQuatCamera::UpdateReferenceFrame(float DeltaTime)
 {
-	if (OldUp.Equals(NewUp, 0.0001f))
+	if (CurrentFrame.Equals(TargetFrame, 0.0001f))
 	{
+		CurrentFrame = TargetFrame;
 		return;
 	}
 
-	FQuat CurrentWorldRotation = ComputeWorldRotation();
-	
-	float NewYaw, NewPitch;
-	DecomposeWorldRotation(CurrentWorldRotation, NewUp, NewYaw, NewPitch);
-
-	LocalYaw = NewYaw;
-	LocalPitch = FMath::Clamp(NewPitch, PitchClampMin, PitchClampMax);
+	const float Alpha = FMath::Clamp(UpTransitionSpeed * DeltaTime, 0.0f, 1.0f);
+	CurrentFrame = FQuat::Slerp(CurrentFrame, TargetFrame, Alpha).GetNormalized();
 }
 
 FQuat UQuatCamera::ComputeWorldRotation() const
 {
-	FVector Forward = FVector::ForwardVector;
-	FVector Right = FVector::RightVector;
-	
-	float CrossZ = FVector::UpVector.X * CurrentUpDirection.Y - FVector::UpVector.Y * CurrentUpDirection.X;
-	float DotUp = FVector::UpVector | CurrentUpDirection;
-	
-	FQuat AlignToUp = FQuat::FindBetweenNormals(FVector::UpVector, CurrentUpDirection);
-	
-	FQuat YawRotation = FQuat(CurrentUpDirection, FMath::DegreesToRadians(LocalYaw));
-	
-	FVector RightAfterYaw = YawRotation.RotateVector(AlignToUp.RotateVector(Right));
-	
-	FQuat PitchRotation = FQuat(RightAfterYaw, FMath::DegreesToRadians(-LocalPitch));
-	
-	return (PitchRotation * YawRotation * AlignToUp).GetNormalized();
-}
-
-void UQuatCamera::DecomposeWorldRotation(const FQuat& WorldRotation, const FVector& UpDir, float& OutYaw, float& OutPitch) const
-{
-	FVector WorldForward = WorldRotation.GetForwardVector();
-	
-	FVector ProjectedForward = FVector::VectorPlaneProject(WorldForward, UpDir);
-	
-	if (ProjectedForward.IsNearlyZero())
-	{
-		OutYaw = LocalYaw;
-		OutPitch = (WorldForward | UpDir) > 0.0f ? PitchClampMax : PitchClampMin;
-		return;
-	}
-	
-	ProjectedForward.Normalize();
-	
-	FQuat AlignToUp = FQuat::FindBetweenNormals(FVector::UpVector, UpDir);
-	FVector BaseForward = AlignToUp.RotateVector(FVector::ForwardVector);
-	FVector BaseRight = AlignToUp.RotateVector(FVector::RightVector);
-	
-	float ForwardDot = ProjectedForward | BaseForward;
-	float RightDot = ProjectedForward | BaseRight;
-	OutYaw = FMath::RadiansToDegrees(FMath::Atan2(RightDot, ForwardDot));
-	
-	float PitchSin = WorldForward | UpDir;
-	PitchSin = FMath::Clamp(PitchSin, -1.0f, 1.0f);
-	OutPitch = FMath::RadiansToDegrees(FMath::Asin(-PitchSin));
+	const FQuat YawRotation(CurrentFrame.GetUpVector(), FMath::DegreesToRadians(LocalYaw));
+	const FVector RightAfterYaw = YawRotation.RotateVector(CurrentFrame.GetRightVector());
+	const FQuat PitchRotation(RightAfterYaw, FMath::DegreesToRadians(-LocalPitch));
+	return (PitchRotation * YawRotation * CurrentFrame).GetNormalized();
 }

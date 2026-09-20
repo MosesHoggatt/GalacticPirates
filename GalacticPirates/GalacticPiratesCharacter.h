@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
+#include "InputCoreTypes.h"
 #include "Logging/LogMacros.h"
 #include "GalacticPiratesCharacter.generated.h"
 
@@ -11,8 +12,10 @@ class UInputComponent;
 class USkeletalMeshComponent;
 class UCameraComponent;
 class UInputAction;
+class UInputMappingContext;
 class UQuatCamera;
 class AWalkableShip;
+class UMinigunPodComponent;
 struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
@@ -71,6 +74,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Input|Ship")
 	UInputAction* ShipInteractAction;
 
+	/** Hold to fire the occupied minigun */
+	UPROPERTY(EditAnywhere, Category = "Input|Ship")
+	UInputAction* MinigunFireAction;
+
 	/** Ship blueprint to spawn when boarding */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Ship")
 	AWalkableShip* SpawnShip;
@@ -82,6 +89,9 @@ protected:
 	/** Is the character currently piloting a ship? */
 	UPROPERTY(ReplicatedUsing = OnRep_IsPiloting, BlueprintReadOnly, Category = "Ship")
 	bool bIsPiloting = false;
+
+	UPROPERTY(ReplicatedUsing = OnRep_OccupiedMinigun, BlueprintReadOnly, Category = "Ship")
+	TObjectPtr<UMinigunPodComponent> OccupiedMinigun;
 
 	/** Rate at which pilot input is sent over the network */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Ship", meta = (ClampMin = "10.0", ClampMax = "60.0"))
@@ -108,12 +118,41 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	bool IsPiloting() const { return bIsPiloting; }
 
+	UFUNCTION(BlueprintCallable, Category = "Ship")
+	bool IsManningMinigun() const { return OccupiedMinigun != nullptr; }
+
+	UFUNCTION(BlueprintCallable, Category = "Ship")
+	UMinigunPodComponent* GetOccupiedMinigun() const { return OccupiedMinigun; }
+
+	void SetManningMinigun(UMinigunPodComponent* Pod);
+
 	/** Set whether the character is piloting a ship */
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	void SetPiloting(bool bNewPiloting);
 
 	/** Called when the boarded ship is destroyed */
 	void OnShipDestroyed();
+
+	UInputAction* GetMoveAction() const { return MoveAction; }
+	UInputAction* GetLookAction() const { return LookAction; }
+	UInputAction* GetMouseLookAction() const { return MouseLookAction; }
+	UInputAction* GetShipThrustAction() const { return ShipThrustAction; }
+	UInputAction* GetShipVerticalAction() const { return ShipVerticalAction; }
+	UInputAction* GetShipRotationAction() const { return ShipRotationAction; }
+	UInputAction* GetShipRollAction() const { return ShipRollAction; }
+	UInputAction* GetShipInteractAction() const { return ShipInteractAction; }
+
+	int32 GetDebugMoveInputCount() const { return DebugMoveInputCount; }
+	int32 GetDebugLookInputCount() const { return DebugLookInputCount; }
+	FVector2D GetDebugLastMoveInput() const { return DebugLastMoveInput; }
+	FVector2D GetDebugLastLookInput() const { return DebugLastLookInput; }
+
+	void RestoreWalkingOnShip();
+
+	void DumpShipDebugSnapshot(const TCHAR* Reason) const;
+	void StartAutomatedShipPlaytest();
+	void ApplyLookForTest(float Yaw, float Pitch);
+	void ApplyJumpForTest();
 
 protected:
 
@@ -137,6 +176,7 @@ protected:
 
 	/** Called from Input Actions for ship interaction input */
 	void ShipInteractInput(const FInputActionValue& Value);
+	void MinigunFireInput(const FInputActionValue& Value);
 
 	/** Handles aim inputs from either controls or UI interfaces */
 	UFUNCTION(BlueprintCallable, Category="Input")
@@ -159,6 +199,7 @@ protected:
 	/** Set up input action bindings */
 	virtual void SetupPlayerInputComponent(UInputComponent* InputComponent) override;
 	virtual void BeginPlay() override;
+	virtual void NotifyControllerChanged() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual void Destroyed() override;
 
@@ -169,6 +210,9 @@ protected:
 	/** Called when the piloting status is replicated */
 	UFUNCTION()
 	void OnRep_IsPiloting();
+
+	UFUNCTION()
+	void OnRep_OccupiedMinigun();
 
 	/** Called when the ship's rotation is changed */
 	UFUNCTION()
@@ -182,10 +226,57 @@ protected:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_RequestHelmInteraction();
 
+	UFUNCTION(Server, Unreliable, WithValidation)
+	void Server_SendMinigunAim(float YawDelta, float PitchDelta);
+
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_SetMinigunFiring(bool bNewFiring);
+
 private:
 	FVector AccumulatedThrustInput;
 	FVector AccumulatedRotationInput;
 	float TimeSinceLastPilotInputSend;
+	FVector2D HelmMouseSteer = FVector2D::ZeroVector;
+	bool bHelmMouseSteerThisFrame = false;
+
+	void MouseLookInput(const FInputActionValue& Value);
+	void ApplyHelmMouseSteer(const FVector2D& MouseDelta);
+
+	UPROPERTY(Transient)
+	UInputMappingContext* RuntimeShipAccessIMC = nullptr;
+
+	UPROPERTY(Transient)
+	UInputMappingContext* RuntimeMinigunFireIMC = nullptr;
+
+	UPROPERTY(Transient)
+	UInputMappingContext* RuntimeLocomotionIMC = nullptr;
+
+	/** Adds helm interact plus walk/look mappings if the possessed controller does not provide them. */
+	void SetupShipAccessInputContext();
+
+	void MapRuntimeLocomotionKeys();
+
+	void TickAutomatedShipPlaytest(float DeltaTime);
+	void InjectPlaytestKey(const FKey& Key, EInputEvent Event, float Delta = 1.0f);
+	void InjectPlaytestAxis(const FKey& Key, FVector Delta);
+
+	int32 DebugMoveInputCount = 0;
+	int32 DebugLookInputCount = 0;
+	FVector2D DebugLastMoveInput = FVector2D::ZeroVector;
+	FVector2D DebugLastLookInput = FVector2D::ZeroVector;
+
+	int32 ShipPlaytestPhase = -1;
+	float ShipPlaytestTime = 0.0f;
+	FVector ShipPlaytestStartLocation = FVector::ZeroVector;
+	float ShipPlaytestStartYaw = 0.0f;
+	FRotator ShipPlaytestShipStartRotation = FRotator::ZeroRotator;
+	int32 ShipPlaytestMoveCountAtMark = 0;
+	int32 ShipPlaytestLookCountAtMark = 0;
+	bool bShipPlaytestLookDirectPassed = false;
+	bool bShipPlaytestMoveDirectPassed = false;
+	bool bShipPlaytestWasdMappedPassed = false;
+	bool bShipPlaytestLookMappedPassed = false;
+	bool bShipPlaytestHelmFollowPassed = false;
 
 	/** Updates the camera's up direction based on the ship's orientation */
 	void UpdateCameraUpDirection();
@@ -201,6 +292,13 @@ private:
 
 	/** Clears the movement base, reverting to default behavior */
 	void ClearMovementBase();
+
+	/** Keeps gravity, base, and deck contact valid while boarded. */
+	void TickBoardedWalkPhysics(float DeltaTime);
+
+	FTransform LastGoodShipRelative = FTransform::Identity;
+	bool bHasLastGoodShipRelative = false;
+	float TimeOffShipDeck = 0.0f;
 
 public:
 

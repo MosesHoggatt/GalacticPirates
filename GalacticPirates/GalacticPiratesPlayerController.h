@@ -8,6 +8,7 @@
 
 class UInputMappingContext;
 class UUserWidget;
+class UShipHudWidget;
 
 /**
  *  Simple first person Player Controller
@@ -41,6 +42,9 @@ protected:
 	/** Pointer to the mobile controls widget */
 	UPROPERTY()
 	TObjectPtr<UUserWidget> MobileControlsWidget;
+
+	UPROPERTY()
+	TObjectPtr<UShipHudWidget> ShipHud;
 
 	/** If true, the player will use UMG touch controls even if not playing on mobile platforms */
 	UPROPERTY(EditAnywhere, Config, Category = "Input|Touch Controls")

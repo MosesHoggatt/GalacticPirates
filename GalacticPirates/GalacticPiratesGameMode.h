@@ -6,8 +6,11 @@
 #include "GameFramework/GameModeBase.h"
 #include "GalacticPiratesGameMode.generated.h"
 
+class AWalkableShip;
+
 /**
- *  Simple GameMode for a first person game
+ * Dedicated-server persistent world GameMode.
+ * Players spawn aboard the walkable ship; there is no player-host path.
  */
 UCLASS(abstract)
 class AGalacticPiratesGameMode : public AGameModeBase
@@ -16,7 +19,14 @@ class AGalacticPiratesGameMode : public AGameModeBase
 
 public:
 	AGalacticPiratesGameMode();
+
+	virtual void RestartPlayer(AController* NewPlayer) override;
+	virtual void Logout(AController* Exiting) override;
+
+	UFUNCTION(BlueprintCallable, Category = "Ship")
+	AWalkableShip* GetOrSpawnPersistentShip();
+
+protected:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Ship")
+	TSubclassOf<AWalkableShip> DefaultWalkableShipClass;
 };
-
-
-

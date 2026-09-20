@@ -1,0 +1,718 @@
+#include "HolographicMapTableComponent.h"
+#include "HoloMapPoiComponent.h"
+#include "HeatseekingMissile.h"
+#include "WalkableShip.h"
+#include "GalacticPiratesCharacter.h"
+#include "ShipPolish.h"
+#include "GalacticPirates.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/PointLightComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
+#include "EngineUtils.h"
+#include "UObject/ConstructorHelpers.h"
+#include "Components/BoxComponent.h"
+#include "HoloMapScanRange.h"
+
+namespace
+{
+	bool CanMutateHoloMapAttachments(const UActorComponent* Comp)
+	{
+		if (!Comp || Comp->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+		{
+			return false;
+		}
+		if (GIsReinstancing.load() || GIsReconstructingBlueprintInstances)
+		{
+			return false;
+		}
+		const AActor* Owner = Comp->GetOwner();
+		return Owner && !Owner->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject);
+	}
+}
+
+UHolographicMapTableComponent::UHolographicMapTableComponent()
+{
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = true;
+	SetMobility(EComponentMobility::Movable);
+
+	auto InitChild = [this](USceneComponent* Child)
+	{
+		if (!Child)
+		{
+			return;
+		}
+		Child->SetMobility(EComponentMobility::Movable);
+		Child->SetUsingAbsoluteLocation(false);
+		Child->SetUsingAbsoluteRotation(false);
+		Child->SetUsingAbsoluteScale(false);
+		Child->SetupAttachment(this);
+	};
+
+	TableMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("TableMesh"));
+	InitChild(TableMesh);
+	TableMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	TableMesh->SetCollisionObjectType(ECC_WorldDynamic);
+	TableMesh->SetCollisionResponseToAllChannels(ECR_Block);
+	TableMesh->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	TableMesh->SetRelativeLocation(FVector(0.0f, 0.0f, 66.0f));
+	TableMesh->SetRelativeScale3D(FVector(2.4f, 2.4f, 1.32f));
+	TableMesh->SetCastShadow(true);
+
+	OwnShipMarker = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("OwnShipMarker"));
+	InitChild(OwnShipMarker);
+	OwnShipMarker->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	OwnShipMarker->SetRelativeLocation(FVector(0.0f, 0.0f, VolumeCenterZ));
+	OwnShipMarker->SetRelativeScale3D(FVector(0.42f, 0.42f, 0.42f));
+	OwnShipMarker->SetCastShadow(false);
+
+	HoloVolumeMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("HoloVolumeMesh"));
+	InitChild(HoloVolumeMesh);
+	HoloVolumeMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	HoloVolumeMesh->SetCastShadow(false);
+	HoloVolumeMesh->SetVisibility(false);
+	HoloVolumeMesh->SetHiddenInGame(true);
+
+	HoloLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("HoloLight"));
+	InitChild(HoloLight);
+	HoloLight->SetRelativeLocation(FVector(0.0f, 0.0f, VolumeCenterZ));
+	HoloLight->SetIntensity(1200.0f);
+	HoloLight->SetAttenuationRadius(180.0f);
+	HoloLight->SetLightColor(FLinearColor(0.25f, 0.85f, 1.0f));
+	HoloLight->SetCastShadows(false);
+	HoloLight->bUseInverseSquaredFalloff = false;
+
+	EquatorRing = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("EquatorRing"));
+	InitChild(EquatorRing);
+	MeridianRing = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MeridianRing"));
+	InitChild(MeridianRing);
+	TransverseRing = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("TransverseRing"));
+	InitChild(TransverseRing);
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube"));
+	if (CubeMesh.Succeeded())
+	{
+		TableMesh->SetStaticMesh(CubeMesh.Object);
+		OwnShipMarker->SetStaticMesh(CubeMesh.Object);
+	}
+	HideCylinderMesh(EquatorRing);
+	HideCylinderMesh(MeridianRing);
+	HideCylinderMesh(TransverseRing);
+	HideCylinderMesh(HoloVolumeMesh);
+}
+
+void UHolographicMapTableComponent::OnRegister()
+{
+	Super::OnRegister();
+}
+
+void UHolographicMapTableComponent::BeginPlay()
+{
+	Super::BeginPlay();
+	ScanRangeCm = GPHoloMapScanRangeCm();
+	ResolveOwningShip();
+	PlaceInCabin();
+
+	TintMarker(TableMesh, FLinearColor(0.55f, 0.58f, 0.62f, 1.0f));
+	TintMarker(OwnShipMarker, FLinearColor(0.15f, 0.55f, 1.0f, 1.0f));
+
+	SetVisualsVisible(ShouldDrawVisuals());
+	RebuildTrackedPois();
+	RefreshMarkers();
+}
+
+bool UHolographicMapTableComponent::ShouldDrawVisuals() const
+{
+	if (!OwningShip || OwningShip->IsWrecked() || GetNetMode() == NM_DedicatedServer)
+	{
+		return false;
+	}
+
+	for (AGalacticPiratesCharacter* Character : OwningShip->GetPlayersAboard())
+	{
+		if (Character && Character->IsLocallyControlled())
+		{
+			return true;
+		}
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		if (APlayerController* PC = World->GetFirstPlayerController())
+		{
+			if (AGalacticPiratesCharacter* Pawn = Cast<AGalacticPiratesCharacter>(PC->GetPawn()))
+			{
+				return Pawn->GetBoardedShip() == OwningShip;
+			}
+		}
+	}
+
+	return false;
+}
+
+void UHolographicMapTableComponent::SetVisualsVisible(bool bShowVisuals)
+{
+	if (TableMesh) { TableMesh->SetVisibility(bShowVisuals); }
+	if (HoloVolumeMesh) { HoloVolumeMesh->SetVisibility(false); }
+	if (OwnShipMarker) { OwnShipMarker->SetVisibility(bShowVisuals); }
+	if (HoloLight) { HoloLight->SetVisibility(bShowVisuals); }
+	if (EquatorRing) { EquatorRing->SetVisibility(false); }
+	if (MeridianRing) { MeridianRing->SetVisibility(false); }
+	if (TransverseRing) { TransverseRing->SetVisibility(false); }
+}
+
+void UHolographicMapTableComponent::ResolveOwningShip()
+{
+	OwningShip = Cast<AWalkableShip>(GetOwner());
+	if (!OwningShip)
+	{
+		OwningShip = Cast<AWalkableShip>(GetTypedOuter<AWalkableShip>());
+	}
+}
+
+void UHolographicMapTableComponent::BindVisualToTable(USceneComponent* Child, const FVector& RelLoc, const FRotator& RelRot, const FVector& RelScale)
+{
+	if (!Child)
+	{
+		return;
+	}
+
+	Child->SetMobility(EComponentMobility::Movable);
+	Child->SetUsingAbsoluteLocation(false);
+	Child->SetUsingAbsoluteRotation(false);
+	Child->SetUsingAbsoluteScale(false);
+	if (Child->GetOwner() != GetOwner()
+		|| Child->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject)
+		|| HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+	{
+		return;
+	}
+	if (Child->GetAttachParent() != this)
+	{
+		Child->AttachToComponent(this, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+	}
+	Child->SetRelativeLocationAndRotation(RelLoc, RelRot);
+	Child->SetRelativeScale3D(RelScale);
+}
+
+void UHolographicMapTableComponent::PlaceInCabin()
+{
+	if (!CanMutateHoloMapAttachments(this))
+	{
+		return;
+	}
+
+	ResolveOwningShip();
+	if (!OwningShip)
+	{
+		return;
+	}
+
+	USceneComponent* ShipOrigin = OwningShip->ShipRoot ? OwningShip->ShipRoot : OwningShip->GetRootComponent();
+	if (!ShipOrigin)
+	{
+		return;
+	}
+
+	SetMobility(EComponentMobility::Movable);
+	SetUsingAbsoluteLocation(false);
+	SetUsingAbsoluteRotation(false);
+	SetUsingAbsoluteScale(false);
+
+	if (GetAttachParent() != ShipOrigin)
+	{
+		AttachToComponent(ShipOrigin, FAttachmentTransformRules::KeepWorldTransform);
+	}
+
+	BindVisualToTable(TableMesh, FVector(0.0f, 0.0f, 66.0f), FRotator::ZeroRotator, FVector(2.4f, 2.4f, 1.32f));
+	BindVisualToTable(OwnShipMarker, FVector(0.0f, 0.0f, VolumeCenterZ), FRotator::ZeroRotator, WorldSizeToMarkerScale(GetActorSizeCm(OwningShip)));
+	BindVisualToTable(HoloLight, FVector(0.0f, 0.0f, VolumeCenterZ), FRotator::ZeroRotator, FVector::OneVector);
+	HideCylinderMesh(EquatorRing);
+	HideCylinderMesh(MeridianRing);
+	HideCylinderMesh(TransverseRing);
+	HideCylinderMesh(HoloVolumeMesh);
+
+	const float DriftFromShip = FVector::Dist(GetComponentLocation(), OwningShip->GetActorLocation());
+	if (GetAttachParent() != ShipOrigin)
+	{
+		UE_LOG(LogGalacticPirates, Warning,
+			TEXT("[HoloMap] Table parent is not ship root ship=%s parent=%s drift=%.1f tableWorld=%s shipWorld=%s"),
+			*GetNameSafe(OwningShip),
+			*GetNameSafe(GetAttachParent()),
+			DriftFromShip,
+			*GetComponentLocation().ToCompactString(),
+			*OwningShip->GetActorLocation().ToCompactString());
+	}
+}
+
+UStaticMesh* UHolographicMapTableComponent::LoadPrimitiveMesh(EHoloMapPrimitive Primitive) const
+{
+	const TCHAR* Path = TEXT("/Engine/BasicShapes/Cone.Cone");
+	switch (Primitive)
+	{
+	case EHoloMapPrimitive::Sphere:
+		Path = TEXT("/Engine/BasicShapes/Sphere.Sphere");
+		break;
+	case EHoloMapPrimitive::Cube:
+		Path = TEXT("/Engine/BasicShapes/Cube.Cube");
+		break;
+	case EHoloMapPrimitive::Cylinder:
+		Path = TEXT("/Engine/BasicShapes/Cylinder.Cylinder");
+		break;
+	case EHoloMapPrimitive::Plane:
+		Path = TEXT("/Engine/BasicShapes/Plane.Plane");
+		break;
+	case EHoloMapPrimitive::Cone:
+	default:
+		Path = TEXT("/Engine/BasicShapes/Cone.Cone");
+		break;
+	}
+	return LoadObject<UStaticMesh>(nullptr, Path);
+}
+
+void UHolographicMapTableComponent::BindPooledMesh(UStaticMeshComponent* Mesh)
+{
+	if (!Mesh)
+	{
+		return;
+	}
+
+	Mesh->SetMobility(EComponentMobility::Movable);
+	Mesh->SetUsingAbsoluteLocation(false);
+	Mesh->SetUsingAbsoluteRotation(false);
+	Mesh->SetUsingAbsoluteScale(false);
+	if (Mesh->GetAttachParent() != this)
+	{
+		Mesh->AttachToComponent(this, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+	}
+}
+
+UStaticMeshComponent* UHolographicMapTableComponent::GetOrCreatePooledMesh(TArray<TObjectPtr<UStaticMeshComponent>>& Pool, int32 Index)
+{
+	while (Pool.Num() <= Index)
+	{
+		if (GIsReinstancing.load())
+		{
+			return nullptr;
+		}
+
+		AActor* OwnerActor = OwningShip ? static_cast<AActor*>(OwningShip.Get()) : GetOwner();
+		UStaticMeshComponent* Mesh = NewObject<UStaticMeshComponent>(OwnerActor);
+		Mesh->SetMobility(EComponentMobility::Movable);
+		Mesh->SetupAttachment(this);
+		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Mesh->SetCastShadow(false);
+		Mesh->SetUsingAbsoluteLocation(false);
+		Mesh->SetUsingAbsoluteRotation(false);
+		Mesh->SetUsingAbsoluteScale(false);
+		Mesh->RegisterComponent();
+		BindPooledMesh(Mesh);
+		Pool.Add(Mesh);
+	}
+
+	BindPooledMesh(Pool[Index]);
+	return Pool[Index];
+}
+
+FVector UHolographicMapTableComponent::WorldOffsetToVolume(const FVector& ShipLocalOffset) const
+{
+	const float Range = FMath::Max(ScanRangeCm, 1.0f);
+	FVector Scaled = (ShipLocalOffset / Range) * VolumeRadiusCm;
+	const float Radius = Scaled.Size();
+	if (Radius > VolumeRadiusCm)
+	{
+		Scaled *= VolumeRadiusCm / Radius;
+	}
+	return FVector(Scaled.X, Scaled.Y, VolumeCenterZ + Scaled.Z);
+}
+
+void UHolographicMapTableComponent::HideCylinderMesh(UStaticMeshComponent* Mesh)
+{
+	if (!Mesh)
+	{
+		return;
+	}
+	Mesh->SetStaticMesh(nullptr);
+	Mesh->SetVisibility(false);
+	Mesh->SetHiddenInGame(true);
+	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+}
+
+FVector UHolographicMapTableComponent::GetActorSizeCm(const AActor* Actor) const
+{
+	if (const AWalkableShip* Ship = Cast<AWalkableShip>(Actor))
+	{
+		if (Ship->CombatHull)
+		{
+			return (Ship->CombatHull->GetScaledBoxExtent() * 2.0f).GetAbs();
+		}
+
+		if (Ship->HullMesh && Ship->HullMesh->GetStaticMesh())
+		{
+			return (Ship->HullMesh->GetStaticMesh()->GetBoundingBox().GetSize() * Ship->HullMesh->GetComponentScale()).GetAbs();
+		}
+	}
+
+	if (!Actor)
+	{
+		return FVector(2200.0f, 1200.0f, 800.0f);
+	}
+
+	FVector Origin = FVector::ZeroVector;
+	FVector Extent = FVector::ZeroVector;
+	Actor->GetActorBounds(true, Origin, Extent, false);
+	return (Extent * 2.0f).GetAbs();
+}
+
+FVector UHolographicMapTableComponent::WorldSizeToMarkerScale(const FVector& WorldSizeCm) const
+{
+	const float MapScale = VolumeRadiusCm / FMath::Max(ScanRangeCm, 1.0f);
+	const FVector HoloSizeCm = WorldSizeCm.GetAbs() * MapScale;
+	return HoloSizeCm / 100.0f;
+}
+
+void UHolographicMapTableComponent::TintMarker(UStaticMeshComponent* Mesh, const FLinearColor& Color) const
+{
+	GPApplyPolishVfxMaterial(Mesh, TEXT("circle_05"), Color);
+}
+
+void UHolographicMapTableComponent::RebuildTrackedPois()
+{
+	TrackedPois.Reset();
+	UWorld* World = GetWorld();
+	if (!World || !OwningShip || OwningShip->IsWrecked())
+	{
+		return;
+	}
+
+	const FVector Origin = OwningShip->GetActorLocation();
+	const FQuat InvRot = OwningShip->GetActorQuat().Inverse();
+	const float Range = FMath::Max(ScanRangeCm, 1.0f);
+
+	for (TActorIterator<AWalkableShip> It(World); It; ++It)
+	{
+		AWalkableShip* OtherShip = *It;
+		if (!OtherShip || OtherShip == OwningShip || OtherShip->IsWrecked())
+		{
+			continue;
+		}
+
+		UHoloMapPoiComponent* Poi = OtherShip->HoloPoi;
+		if (!Poi)
+		{
+			Poi = OtherShip->FindComponentByClass<UHoloMapPoiComponent>();
+		}
+		if (!Poi || !Poi->bVisibleOnMaps || Poi->GetTypedOuter<AWalkableShip>() != OtherShip)
+		{
+			continue;
+		}
+
+		AActor* Actor = OtherShip;
+
+		const FVector WorldLoc = Actor->GetActorLocation();
+		const float Dist = FVector::Dist(Origin, WorldLoc);
+		if (Dist > Range)
+		{
+			continue;
+		}
+
+		FHoloMapTrackedPoi Entry;
+		Entry.Actor = Actor;
+		Entry.Kind = Poi ? Poi->Kind : EHoloMapPoiKind::EnemyShip;
+		Entry.Primitive = Poi ? Poi->GetResolvedPrimitive() : EHoloMapPrimitive::Cone;
+		Entry.Color = Poi ? Poi->GetResolvedColor() : FLinearColor(1.0f, 0.12f, 0.08f, 1.0f);
+		Entry.WorldLocation = WorldLoc;
+		Entry.DistanceCm = Dist;
+
+		const FVector Local = InvRot.RotateVector(WorldLoc - Origin);
+		Entry.TableRelative = WorldOffsetToVolume(Local);
+
+		const FVector RelFwd = InvRot.RotateVector(Actor->GetActorForwardVector()).GetSafeNormal();
+		Entry.RelativeRotation = RelFwd.IsNearlyZero()
+			? FRotator::ZeroRotator
+			: FRotationMatrix::MakeFromZ(RelFwd).Rotator();
+		Entry.MarkerScale = WorldSizeToMarkerScale(GetActorSizeCm(Actor));
+		TrackedPois.Add(Entry);
+	}
+
+	for (TActorIterator<AHeatseekingMissile> It(World); It; ++It)
+	{
+		AHeatseekingMissile* Missile = *It;
+		if (!Missile || Missile->IsActorBeingDestroyed())
+		{
+			continue;
+		}
+
+		UHoloMapPoiComponent* Poi = Missile->HoloPoi;
+		if (!Poi)
+		{
+			Poi = Missile->FindComponentByClass<UHoloMapPoiComponent>();
+		}
+		if (!Poi || !Poi->bVisibleOnMaps)
+		{
+			continue;
+		}
+
+		const FVector WorldLoc = Missile->GetActorLocation();
+		const float Dist = FVector::Dist(Origin, WorldLoc);
+		if (Dist > Range)
+		{
+			continue;
+		}
+
+		FHoloMapTrackedPoi Entry;
+		Entry.Actor = Missile;
+		Entry.Kind = EHoloMapPoiKind::Missile;
+		Entry.Primitive = EHoloMapPrimitive::Sphere;
+		Entry.Color = Poi->GetResolvedColor();
+		Entry.WorldLocation = WorldLoc;
+		Entry.DistanceCm = Dist;
+
+		const FVector Local = InvRot.RotateVector(WorldLoc - Origin);
+		Entry.TableRelative = WorldOffsetToVolume(Local);
+		Entry.RelativeRotation = FRotator::ZeroRotator;
+		Entry.MarkerScale = Poi->MarkerScale.IsNearlyZero() ? FVector(0.04f) : Poi->MarkerScale;
+		TrackedPois.Add(Entry);
+	}
+
+	TrackedPois.Sort([](const FHoloMapTrackedPoi& A, const FHoloMapTrackedPoi& B)
+	{
+		return A.DistanceCm < B.DistanceCm;
+	});
+
+	CaptureMarkerInterpTargets();
+}
+
+void UHolographicMapTableComponent::CaptureMarkerInterpTargets()
+{
+	TArray<FHoloMarkerInterp> Previous = MarkerInterps;
+	TSet<int32> UsedSlots;
+	MarkerInterps.Reset();
+	MarkerInterps.Reserve(TrackedPois.Num());
+
+	auto AllocateSlot = [this, &UsedSlots]() -> int32
+	{
+		for (int32 Slot = 0; Slot < MarkerPool.Num(); ++Slot)
+		{
+			if (!UsedSlots.Contains(Slot))
+			{
+				return Slot;
+			}
+		}
+		const int32 Slot = MarkerPool.Num();
+		GetOrCreatePooledMesh(MarkerPool, Slot);
+		return Slot;
+	};
+
+	for (const FHoloMapTrackedPoi& Poi : TrackedPois)
+	{
+		FHoloMarkerInterp State;
+		State.Actor = Poi.Actor;
+		State.ToLoc = Poi.TableRelative;
+		State.ToRot = Poi.RelativeRotation.Quaternion();
+
+		const FHoloMarkerInterp* Prev = Previous.FindByPredicate([&Poi](const FHoloMarkerInterp& Other)
+		{
+			return Other.Actor.HasSameIndexAndSerialNumber(Poi.Actor);
+		});
+
+		if (Prev && Prev->PoolIndex != INDEX_NONE && !UsedSlots.Contains(Prev->PoolIndex))
+		{
+			State.PoolIndex = Prev->PoolIndex;
+			State.FromLoc = Prev->DisplayedLoc;
+			State.FromRot = Prev->DisplayedRot;
+		}
+		else
+		{
+			State.PoolIndex = AllocateSlot();
+			State.FromLoc = State.ToLoc;
+			State.FromRot = State.ToRot;
+		}
+
+		UsedSlots.Add(State.PoolIndex);
+		State.DisplayedLoc = State.FromLoc;
+		State.DisplayedRot = State.FromRot;
+		MarkerInterps.Add(State);
+	}
+}
+
+void UHolographicMapTableComponent::InterpolateMarkers()
+{
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	const float Alpha = FMath::Clamp(RefreshTimer / FMath::Max(RefreshInterval, 0.0001f), 0.0f, 1.0f);
+	for (FHoloMarkerInterp& State : MarkerInterps)
+	{
+		State.DisplayedLoc = FMath::Lerp(State.FromLoc, State.ToLoc, Alpha);
+		State.DisplayedRot = FQuat::Slerp(State.FromRot, State.ToRot, Alpha);
+
+		UStaticMeshComponent* Marker = MarkerPool.IsValidIndex(State.PoolIndex) ? MarkerPool[State.PoolIndex].Get() : nullptr;
+		if (!Marker || !Marker->IsVisible())
+		{
+			continue;
+		}
+
+		Marker->SetRelativeLocation(State.DisplayedLoc);
+		Marker->SetRelativeRotation(State.DisplayedRot.Rotator());
+	}
+}
+
+void UHolographicMapTableComponent::RefreshMarkers()
+{
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	const bool bShow = ShouldDrawVisuals();
+	SetVisualsVisible(bShow);
+	if (!bShow)
+	{
+		for (UStaticMeshComponent* Mesh : MarkerPool)
+		{
+			if (Mesh) { Mesh->SetVisibility(false); }
+		}
+		for (UStaticMeshComponent* Mesh : AltitudeLinePool)
+		{
+			if (Mesh) { Mesh->SetVisibility(false); }
+		}
+		return;
+	}
+	if (OwnShipMarker)
+	{
+		OwnShipMarker->SetVisibility(bShow);
+		OwnShipMarker->SetRelativeLocation(FVector(0.0f, 0.0f, VolumeCenterZ));
+		OwnShipMarker->SetRelativeRotation(FRotator::ZeroRotator);
+		OwnShipMarker->SetRelativeScale3D(WorldSizeToMarkerScale(GetActorSizeCm(OwningShip)));
+		TintMarker(OwnShipMarker, FLinearColor(0.15f, 0.55f, 1.0f, 1.0f));
+	}
+	HideCylinderMesh(HoloVolumeMesh);
+	HideCylinderMesh(EquatorRing);
+	HideCylinderMesh(MeridianRing);
+	HideCylinderMesh(TransverseRing);
+	for (UStaticMeshComponent* Mesh : AltitudeLinePool)
+	{
+		HideCylinderMesh(Mesh);
+	}
+
+	for (int32 Index = 0; Index < TrackedPois.Num(); ++Index)
+	{
+		const FHoloMapTrackedPoi& Poi = TrackedPois[Index];
+		const int32 PoolIndex = MarkerInterps.IsValidIndex(Index) ? MarkerInterps[Index].PoolIndex : Index;
+		UStaticMeshComponent* Marker = GetOrCreatePooledMesh(MarkerPool, PoolIndex);
+		if (!Marker)
+		{
+			continue;
+		}
+
+		UStaticMesh* DesiredMesh = nullptr;
+		if (AActor* Actor = Poi.Actor.Get())
+		{
+			if (UHoloMapPoiComponent* Comp = Actor->FindComponentByClass<UHoloMapPoiComponent>())
+			{
+				DesiredMesh = Comp->OverrideMesh;
+			}
+		}
+		if (!DesiredMesh)
+		{
+			DesiredMesh = LoadPrimitiveMesh(Poi.Primitive);
+		}
+
+		if (DesiredMesh && Marker->GetStaticMesh() != DesiredMesh)
+		{
+			Marker->SetStaticMesh(DesiredMesh);
+		}
+
+		FVector Scale = Poi.MarkerScale;
+		if (Poi.Primitive == EHoloMapPrimitive::Cone)
+		{
+			Scale = FVector(Poi.MarkerScale.Y, Poi.MarkerScale.Z, Poi.MarkerScale.X);
+		}
+
+		Marker->SetVisibility(bShow);
+		Marker->SetRelativeScale3D(Scale);
+		TintMarker(Marker, Poi.Color);
+	}
+
+	TSet<int32> UsedSlots;
+	for (const FHoloMarkerInterp& State : MarkerInterps)
+	{
+		UsedSlots.Add(State.PoolIndex);
+	}
+	for (int32 Slot = 0; Slot < MarkerPool.Num(); ++Slot)
+	{
+		if (!UsedSlots.Contains(Slot) && MarkerPool[Slot])
+		{
+			MarkerPool[Slot]->SetVisibility(false);
+		}
+	}
+	for (int32 Index = TrackedPois.Num(); Index < AltitudeLinePool.Num(); ++Index)
+	{
+		if (AltitudeLinePool[Index])
+		{
+			AltitudeLinePool[Index]->SetVisibility(false);
+		}
+	}
+}
+
+AActor* UHolographicMapTableComponent::GetBestAutoTarget() const
+{
+	AActor* Best = nullptr;
+	float BestDist = TNumericLimits<float>::Max();
+	for (const FHoloMapTrackedPoi& Poi : TrackedPois)
+	{
+		AActor* Actor = Poi.Actor.Get();
+		if (!Actor)
+		{
+			continue;
+		}
+
+		bool bHostile = Poi.Kind == EHoloMapPoiKind::EnemyShip;
+		if (UHoloMapPoiComponent* Comp = Actor->FindComponentByClass<UHoloMapPoiComponent>())
+		{
+			bHostile = Comp->IsHostileTo(OwningShip);
+		}
+		if (!bHostile)
+		{
+			continue;
+		}
+
+		if (Poi.DistanceCm < BestDist)
+		{
+			BestDist = Poi.DistanceCm;
+			Best = Actor;
+		}
+	}
+	return Best;
+}
+
+void UHolographicMapTableComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	ScanRangeCm = GPHoloMapScanRangeCm();
+
+	RefreshTimer += DeltaTime;
+	if (RefreshTimer >= RefreshInterval)
+	{
+		RefreshTimer = 0.0f;
+		if (!GIsReinstancing.load())
+		{
+			PlaceInCabin();
+		}
+		RebuildTrackedPois();
+		RefreshMarkers();
+	}
+
+	InterpolateMarkers();
+
+	if (HoloLight && GetNetMode() != NM_DedicatedServer)
+	{
+		const float Pulse = 0.85f + 0.15f * FMath::Sin(GetWorld()->GetTimeSeconds() * 3.2f);
+		HoloLight->SetIntensity(1200.0f * Pulse);
+	}
+}

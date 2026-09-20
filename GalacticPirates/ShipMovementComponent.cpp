@@ -1,4 +1,5 @@
 #include "ShipMovementComponent.h"
+#include "WalkableShip.h"
 #include "Net/UnrealNetwork.h"
 
 UShipMovementComponent::UShipMovementComponent()
@@ -27,9 +28,22 @@ void UShipMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 		return;
 	}
 
+	if (const AWalkableShip* Ship = Cast<AWalkableShip>(GetOwner()))
+	{
+		if (Ship->IsWrecked())
+		{
+			return;
+		}
+	}
+
 	ApplyThrust(DeltaTime);
 	ApplyTorque(DeltaTime);
 	ApplyDampening(DeltaTime);
+	if (bVelocityOverride)
+	{
+		LinearVelocity = OverrideLinearVelocity;
+		AngularVelocity = OverrideAngularVelocity;
+	}
 	ClampVelocities();
 	IntegrateVelocities(DeltaTime);
 
@@ -49,6 +63,28 @@ void UShipMovementComponent::SetRotationInput(const FVector& Input)
 	RotationInput.X = FMath::Clamp(Input.X, -1.0f, 1.0f);
 	RotationInput.Y = FMath::Clamp(Input.Y, -1.0f, 1.0f);
 	RotationInput.Z = FMath::Clamp(Input.Z, -1.0f, 1.0f);
+}
+
+void UShipMovementComponent::SetLinearVelocity(const FVector& NewVelocity)
+{
+	LinearVelocity = NewVelocity;
+}
+
+void UShipMovementComponent::SetAngularVelocity(const FVector& NewVelocity)
+{
+	AngularVelocity = NewVelocity;
+}
+
+void UShipMovementComponent::SetVelocityOverride(const FVector& NewLinear, const FVector& NewAngular, bool bEnable)
+{
+	OverrideLinearVelocity = NewLinear;
+	OverrideAngularVelocity = NewAngular;
+	bVelocityOverride = bEnable;
+	if (bEnable)
+	{
+		LinearVelocity = NewLinear;
+		AngularVelocity = NewAngular;
+	}
 }
 
 void UShipMovementComponent::ApplyThrust(float DeltaTime)
@@ -75,14 +111,14 @@ void UShipMovementComponent::ApplyTorque(float DeltaTime)
 		return;
 	}
 
-	float MomentOfInertia = ShipMass * 100.0f;
+	const float MomentOfInertia = ShipMass * 100.0f;
 
-	FVector TorqueVector;
-	TorqueVector.X = RotationInput.X * RollTorque;
-	TorqueVector.Y = RotationInput.Y * PitchTorque;
-	TorqueVector.Z = RotationInput.Z * YawTorque;
+	FVector LocalTorque;
+	LocalTorque.X = RotationInput.X * RollTorque;
+	LocalTorque.Y = RotationInput.Y * PitchTorque;
+	LocalTorque.Z = RotationInput.Z * YawTorque;
 
-	FVector AngularAcceleration = TorqueVector / MomentOfInertia;
+	FVector AngularAcceleration = LocalTorque / MomentOfInertia;
 	AngularVelocity += AngularAcceleration * DeltaTime;
 }
 

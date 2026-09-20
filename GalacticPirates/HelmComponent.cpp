@@ -1,10 +1,17 @@
 #include "HelmComponent.h"
 #include "WalkableShip.h"
+#include "ShipMovementComponent.h"
 #include "GalacticPiratesCharacter.h"
+#include "GalacticPirates.h"
 #include "EnhancedInputSubsystems.h"
+#include "InputAction.h"
+#include "InputCoreTypes.h"
 #include "InputMappingContext.h"
+#include "InputModifiers.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Engine/EngineTypes.h"
+#include "Interfaces/MovementBaseInterface.h"
 
 UHelmComponent::UHelmComponent()
 {
@@ -16,18 +23,39 @@ void UHelmComponent::BeginPlay()
 {
 	Super::BeginPlay();
 	OwningShip = Cast<AWalkableShip>(GetOwner());
+	PrimaryComponentTick.TickGroup = TG_PostPhysics;
+	if (OwningShip && OwningShip->ShipMovement)
+	{
+		PrimaryComponentTick.AddPrerequisite(OwningShip->ShipMovement, OwningShip->ShipMovement->PrimaryComponentTick);
+	}
 }
 
 void UHelmComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (bIsOccupied && bLockPilotPosition && CurrentPilotRef && OwningShip)
+	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
-		FVector TargetLocation = GetComponentLocation() + GetComponentQuat().RotateVector(PilotRelativeLocation);
-		FQuat TargetRotation = GetComponentQuat() * PilotRelativeRotation.Quaternion();
-		
-		CurrentPilotRef->SetActorLocationAndRotation(TargetLocation, TargetRotation);
+		return;
+	}
+
+	if (!bIsOccupied || !CurrentPilotRef)
+	{
+		return;
+	}
+
+	USceneComponent* PilotRoot = CurrentPilotRef->GetRootComponent();
+	USceneComponent* CurrentAttach = PilotRoot ? PilotRoot->GetAttachParent() : nullptr;
+	USceneComponent* Interior = OwningShip ? OwningShip->GetInteriorMesh() : nullptr;
+	if (CurrentAttach != this && CurrentAttach != Interior)
+	{
+		LockPilotToHelm(CurrentPilotRef);
+	}
+
+	if (bLockPilotPosition && PilotRoot && PilotRoot->GetAttachParent() == this)
+	{
+		CurrentPilotRef->SetActorRelativeLocation(PilotRelativeLocation);
+		CurrentPilotRef->SetActorRelativeRotation(PilotRelativeRotation);
 	}
 }
 
@@ -35,6 +63,7 @@ bool UHelmComponent::TryInteract(AGalacticPiratesCharacter* Character)
 {
 	if (!OwningShip || !Character)
 	{
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Helm TryInteract failed: missing ship or character"));
 		return false;
 	}
 
@@ -42,12 +71,15 @@ bool UHelmComponent::TryInteract(AGalacticPiratesCharacter* Character)
 	{
 		if (OwningShip->IsPilot(Character))
 		{
+			UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Helm releasing pilot %s"), *GetNameSafe(Character));
 			OwningShip->ReleasePilot(Character);
 			return true;
 		}
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Helm occupied by someone else"));
 		return false;
 	}
 
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Helm requesting pilot assignment for %s"), *GetNameSafe(Character));
 	return OwningShip->RequestPilotAssignment(Character);
 }
 
@@ -76,10 +108,15 @@ AGalacticPiratesCharacter* UHelmComponent::GetCurrentPilot() const
 
 void UHelmComponent::OnPilotChanged(AGalacticPiratesCharacter* NewPilot, AGalacticPiratesCharacter* OldPilot)
 {
+	const bool bAuthority = GetOwner() && GetOwner()->HasAuthority();
+
 	if (OldPilot)
 	{
 		RemoveInputContextFromPilot(OldPilot);
-		UnlockPilotFromHelm(OldPilot);
+		if (bAuthority)
+		{
+			UnlockPilotFromHelm(OldPilot);
+		}
 	}
 
 	CurrentPilotRef = NewPilot;
@@ -88,10 +125,13 @@ void UHelmComponent::OnPilotChanged(AGalacticPiratesCharacter* NewPilot, AGalact
 	if (NewPilot)
 	{
 		AddInputContextToPilot(NewPilot);
-		LockPilotToHelm(NewPilot);
+		if (bAuthority)
+		{
+			LockPilotToHelm(NewPilot);
+		}
 	}
 
-	SetComponentTickEnabled(bIsOccupied && bLockPilotPosition);
+	SetComponentTickEnabled(bIsOccupied && bAuthority);
 
 	OnHelmOccupancyChanged.Broadcast(bIsOccupied);
 }
@@ -107,9 +147,75 @@ void UHelmComponent::HandlePilotDisconnected(AGalacticPiratesCharacter* Disconne
 	}
 }
 
+UInputMappingContext* UHelmComponent::GetOrCreateShipControlContext(AGalacticPiratesCharacter* Pilot)
+{
+	if (RuntimeShipControlIMC)
+	{
+		return RuntimeShipControlIMC;
+	}
+
+	if (!Pilot || !Pilot->GetShipThrustAction() || !Pilot->GetShipVerticalAction()
+		|| !Pilot->GetShipRotationAction() || !Pilot->GetShipRollAction())
+	{
+		return nullptr;
+	}
+
+	RuntimeShipControlIMC = NewObject<UInputMappingContext>(this, TEXT("RuntimeShipControlIMC"));
+
+	auto MapNegated = [this](const UInputAction* Action, const FKey& Key)
+	{
+		FEnhancedActionKeyMapping& Mapping = RuntimeShipControlIMC->MapKey(Action, Key);
+		Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(RuntimeShipControlIMC));
+	};
+
+	auto MapToYAxis = [this](const UInputAction* Action, const FKey& Key, bool bNegate)
+	{
+		FEnhancedActionKeyMapping& Mapping = RuntimeShipControlIMC->MapKey(Action, Key);
+		Mapping.Modifiers.Add(NewObject<UInputModifierSwizzleAxis>(RuntimeShipControlIMC));
+		if (bNegate)
+		{
+			Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(RuntimeShipControlIMC));
+		}
+	};
+
+	auto MapStick = [this](const UInputAction* Action, const FKey& Key)
+	{
+		FEnhancedActionKeyMapping& Mapping = RuntimeShipControlIMC->MapKey(Action, Key);
+		Mapping.Modifiers.Add(NewObject<UInputModifierDeadZone>(RuntimeShipControlIMC));
+	};
+
+	const UInputAction* ThrustAction = Pilot->GetShipThrustAction();
+	MapToYAxis(ThrustAction, EKeys::W, false);
+	MapToYAxis(ThrustAction, EKeys::S, true);
+	MapNegated(ThrustAction, EKeys::A);
+	RuntimeShipControlIMC->MapKey(ThrustAction, EKeys::D);
+	MapStick(ThrustAction, EKeys::Gamepad_Left2D);
+
+	const UInputAction* RotationAction = Pilot->GetShipRotationAction();
+	MapToYAxis(RotationAction, EKeys::Up, false);
+	MapToYAxis(RotationAction, EKeys::Down, true);
+	MapNegated(RotationAction, EKeys::Left);
+	RuntimeShipControlIMC->MapKey(RotationAction, EKeys::Right);
+	MapStick(RotationAction, EKeys::Gamepad_Right2D);
+
+	const UInputAction* VerticalAction = Pilot->GetShipVerticalAction();
+	RuntimeShipControlIMC->MapKey(VerticalAction, EKeys::SpaceBar);
+	MapNegated(VerticalAction, EKeys::LeftControl);
+	RuntimeShipControlIMC->MapKey(VerticalAction, EKeys::Gamepad_RightTriggerAxis);
+	MapNegated(VerticalAction, EKeys::Gamepad_LeftTriggerAxis);
+
+	const UInputAction* RollAction = Pilot->GetShipRollAction();
+	RuntimeShipControlIMC->MapKey(RollAction, EKeys::E);
+	MapNegated(RollAction, EKeys::Q);
+	RuntimeShipControlIMC->MapKey(RollAction, EKeys::Gamepad_RightShoulder);
+	MapNegated(RollAction, EKeys::Gamepad_LeftShoulder);
+
+	return RuntimeShipControlIMC;
+}
+
 void UHelmComponent::AddInputContextToPilot(AGalacticPiratesCharacter* Pilot)
 {
-	if (!Pilot || !ShipControlIMC)
+	if (!Pilot)
 	{
 		return;
 	}
@@ -123,13 +229,17 @@ void UHelmComponent::AddInputContextToPilot(AGalacticPiratesCharacter* Pilot)
 	UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer());
 	if (Subsystem)
 	{
-		Subsystem->AddMappingContext(ShipControlIMC, IMCPriority);
+		if (UInputMappingContext* ControlContext = GetOrCreateShipControlContext(Pilot))
+		{
+			Subsystem->AddMappingContext(ControlContext, IMCPriority);
+			UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Added ship control IMC to %s priority=%d"), *GetNameSafe(Pilot), IMCPriority);
+		}
 	}
 }
 
 void UHelmComponent::RemoveInputContextFromPilot(AGalacticPiratesCharacter* Pilot)
 {
-	if (!Pilot || !ShipControlIMC)
+	if (!Pilot)
 	{
 		return;
 	}
@@ -143,38 +253,66 @@ void UHelmComponent::RemoveInputContextFromPilot(AGalacticPiratesCharacter* Pilo
 	UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer());
 	if (Subsystem)
 	{
-		Subsystem->RemoveMappingContext(ShipControlIMC);
+		if (ShipControlIMC)
+		{
+			Subsystem->RemoveMappingContext(ShipControlIMC);
+		}
+		if (RuntimeShipControlIMC)
+		{
+			Subsystem->RemoveMappingContext(RuntimeShipControlIMC);
+		}
 	}
 }
 
 void UHelmComponent::LockPilotToHelm(AGalacticPiratesCharacter* Pilot)
 {
-	if (!Pilot || !bLockPilotPosition)
+	if (!Pilot)
 	{
 		return;
 	}
 
-	UCharacterMovementComponent* Movement = Pilot->GetCharacterMovement();
-	if (Movement)
+	if (UCharacterMovementComponent* Movement = Pilot->GetCharacterMovement())
 	{
-		Movement->DisableMovement();
+		Movement->StopMovementImmediately();
+		Movement->Velocity = FVector::ZeroVector;
+		Movement->SetBase(static_cast<FMovementBaseInterfaceData*>(nullptr));
+		Movement->SetComponentTickEnabled(false);
 	}
 
-	FVector TargetLocation = GetComponentLocation() + GetComponentQuat().RotateVector(PilotRelativeLocation);
-	FQuat TargetRotation = GetComponentQuat() * PilotRelativeRotation.Quaternion();
-	Pilot->SetActorLocationAndRotation(TargetLocation, TargetRotation);
+	USceneComponent* HelmAttachTarget = this;
+	if (!bLockPilotPosition && OwningShip && OwningShip->GetInteriorMesh())
+	{
+		HelmAttachTarget = OwningShip->GetInteriorMesh();
+	}
+
+	if (bLockPilotPosition)
+	{
+		const FVector TargetLocation = GetComponentLocation() + GetComponentQuat().RotateVector(PilotRelativeLocation);
+		const FQuat TargetRotation = GetComponentQuat() * PilotRelativeRotation.Quaternion();
+		Pilot->SetActorLocationAndRotation(TargetLocation, TargetRotation, false, nullptr, ETeleportType::TeleportPhysics);
+		Pilot->AttachToComponent(HelmAttachTarget, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+		Pilot->SetActorRelativeLocation(PilotRelativeLocation);
+		Pilot->SetActorRelativeRotation(PilotRelativeRotation);
+	}
+	else
+	{
+		Pilot->AttachToComponent(HelmAttachTarget, FAttachmentTransformRules::KeepWorldTransform);
+	}
 }
 
 void UHelmComponent::UnlockPilotFromHelm(AGalacticPiratesCharacter* Pilot)
 {
-	if (!Pilot || !bLockPilotPosition)
+	if (!Pilot)
 	{
 		return;
 	}
 
-	UCharacterMovementComponent* Movement = Pilot->GetCharacterMovement();
-	if (Movement)
+	Pilot->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+
+	if (UCharacterMovementComponent* Movement = Pilot->GetCharacterMovement())
 	{
-		Movement->SetMovementMode(MOVE_Walking);
+		Movement->SetComponentTickEnabled(true);
 	}
+
+	Pilot->RestoreWalkingOnShip();
 }

@@ -54,6 +54,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ship Movement")
 	FVector GetAngularVelocity() const { return AngularVelocity; }
 
+	void SetLinearVelocity(const FVector& NewVelocity);
+	void SetAngularVelocity(const FVector& NewVelocity);
+	void SetVelocityOverride(const FVector& NewLinear, const FVector& NewAngular, bool bEnable);
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
@@ -63,6 +67,9 @@ private:
 	FVector RotationInput;
 	FVector LinearVelocity;
 	FVector AngularVelocity;
+	FVector OverrideLinearVelocity = FVector::ZeroVector;
+	FVector OverrideAngularVelocity = FVector::ZeroVector;
+	bool bVelocityOverride = false;
 
 	void ApplyThrust(float DeltaTime);
 	void ApplyTorque(float DeltaTime);
