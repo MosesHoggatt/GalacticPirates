@@ -6,6 +6,8 @@
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
 #include "GalacticPiratesCameraManager.h"
+#include "GalacticPiratesHUD.h"
+#include "GalacticPiratesCharacter.h"
 #include "Blueprint/UserWidget.h"
 #include "ShipHudWidget.h"
 #include "GalacticPirates.h"
@@ -31,6 +33,7 @@ void AGalacticPiratesPlayerController::BeginPlay()
 		ShipHud = CreateWidget<UShipHudWidget>(this);
 		if (ShipHud)
 		{
+			ShipHud->SetVisibility(ESlateVisibility::HitTestInvisible);
 			ShipHud->AddToViewport(20);
 		}
 	}
@@ -86,4 +89,51 @@ bool AGalacticPiratesPlayerController::ShouldUseTouchControls() const
 	}
 
 	return SVirtualJoystick::ShouldDisplayTouchInterface() || bForceTouchControls;
+}
+
+void AGalacticPiratesPlayerController::BeginCrewDeathPresentation()
+{
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[DeathFX] PC BeginCrewDeathPresentation local=%d net=%d hud=%s"),
+		IsLocalPlayerController() ? 1 : 0,
+		static_cast<int32>(GetNetMode()),
+		*GetNameSafe(MyHUD));
+
+	if (!IsLocalPlayerController() || GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	if (ShipHud)
+	{
+		ShipHud->SetVisibility(ESlateVisibility::Collapsed);
+	}
+
+	ClientSetHUD(AGalacticPiratesHUD::StaticClass());
+	AGalacticPiratesHUD* DeathHud = Cast<AGalacticPiratesHUD>(GetHUD());
+	if (!DeathHud)
+	{
+		DeathHud = Cast<AGalacticPiratesHUD>(MyHUD);
+	}
+	if (DeathHud)
+	{
+		DeathHud->BeginDeathPresentation();
+	}
+	else
+	{
+		UE_LOG(LogGalacticPirates, Error, TEXT("[DeathFX] PC failed to spawn GalacticPiratesHUD, got %s"),
+			*GetNameSafe(GetHUD()));
+	}
+}
+
+void AGalacticPiratesPlayerController::SetPawn(APawn* InPawn)
+{
+	Super::SetPawn(InPawn);
+	AGalacticPiratesCharacter* Crew = Cast<AGalacticPiratesCharacter>(InPawn);
+	if (InPawn && (!Crew || !Crew->IsDead()))
+	{
+		if (AGalacticPiratesHUD* DeathHud = Cast<AGalacticPiratesHUD>(GetHUD()))
+		{
+			DeathHud->EndDeathPresentation();
+		}
+	}
 }

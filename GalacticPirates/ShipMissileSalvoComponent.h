@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Components/SceneComponent.h"
+#include "WeaponComponent.h"
 #include "ShipMissileSalvoComponent.generated.h"
 
 class AWalkableShip;
@@ -10,7 +10,7 @@ class AHeatseekingMissile;
 class UMissileSalvoTerminalComponent;
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
-class GALACTICPIRATES_API UShipMissileSalvoComponent : public USceneComponent
+class GALACTICPIRATES_API UShipMissileSalvoComponent : public UWeaponComponent
 {
 	GENERATED_BODY()
 
@@ -24,7 +24,7 @@ public:
 	float StaggerSeconds = 0.14f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile Salvo", meta = (ClampMin = "100.0"))
-	float LaunchSpeed = 4800.0f;
+	float LaunchSpeed = 5760.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile Salvo", meta = (ClampMin = "1.0"))
 	float MissileDamage = 180.0f;
@@ -38,8 +38,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile Salvo", meta = (ClampMin = "0.0"))
 	float SpreadYawDegrees = 6.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile Salvo")
+	bool bInheritOwnerVelocity = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile Salvo")
+	bool bLaunchAlongOwnerForward = false;
+
 	UFUNCTION(BlueprintCallable, Category = "Missile Salvo")
 	bool CanFire() const;
+
+	virtual bool CanFireWeapon() const override;
+	virtual bool TryFireWeapon(APawn* InstigatorPawn) override;
 
 	UFUNCTION(BlueprintPure, Category = "Missile Salvo")
 	float GetCooldownRemaining() const { return CooldownRemaining; }
@@ -59,10 +68,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Missile Salvo")
 	bool FireIgnoringTerminalRange(AGalacticPiratesCharacter* Operator);
 
+	UFUNCTION(BlueprintCallable, Category = "Missile Salvo")
+	bool FireAt(AActor* Target, APawn* InstigatorPawn);
+
 	void AdvanceSalvo(float DeltaTime);
 
 	UFUNCTION(BlueprintCallable, Category = "Missile Salvo")
-	AWalkableShip* ResolveSalvoTarget() const;
+	AActor* ResolveSalvoTarget() const;
 
 	FVector GetMuzzleWorldLocation() const;
 
@@ -82,13 +94,13 @@ protected:
 
 private:
 	UPROPERTY()
-	TObjectPtr<AWalkableShip> OwningShip;
+	TObjectPtr<AActor> OwningCraft;
 
 	int32 PendingLaunches = 0;
 	float StaggerTimer = 0.0f;
-	TWeakObjectPtr<AWalkableShip> PendingTarget;
-	TWeakObjectPtr<AGalacticPiratesCharacter> PendingOperator;
+	TWeakObjectPtr<AActor> PendingTarget;
+	TWeakObjectPtr<APawn> PendingOperator;
 
-	bool FireInternal(AGalacticPiratesCharacter* Operator, bool bRequireTerminalRange);
-	void LaunchOneMissile(int32 IndexInSalvo, AWalkableShip* Target, AGalacticPiratesCharacter* Operator);
+	bool FireInternal(APawn* Operator, bool bRequireTerminalRange, AActor* ForcedTarget);
+	void LaunchOneMissile(int32 IndexInSalvo, AActor* Target, APawn* Operator);
 };

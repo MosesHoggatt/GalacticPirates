@@ -22,6 +22,7 @@ public:
 
 	virtual void RestartPlayer(AController* NewPlayer) override;
 	virtual void Logout(AController* Exiting) override;
+	virtual void StartPlay() override;
 
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	AWalkableShip* GetOrSpawnPersistentShip();

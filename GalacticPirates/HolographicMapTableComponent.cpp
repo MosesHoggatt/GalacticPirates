@@ -2,6 +2,8 @@
 #include "HoloMapPoiComponent.h"
 #include "HeatseekingMissile.h"
 #include "WalkableShip.h"
+#include "BulldogFighter.h"
+#include "SpaceCraft.h"
 #include "GalacticPiratesCharacter.h"
 #include "ShipPolish.h"
 #include "GalacticPirates.h"
@@ -10,6 +12,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/Actor.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Components/BoxComponent.h"
 #include "HoloMapScanRange.h"
@@ -89,7 +92,7 @@ void UHolographicMapTableComponent::BuildRig()
 	InitChild(OwnShipMarker);
 	OwnShipMarker->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	OwnShipMarker->SetRelativeLocation(FVector(0.0f, 0.0f, VolumeCenterZ));
-	OwnShipMarker->SetRelativeScale3D(FVector(0.42f, 0.42f, 0.42f));
+	OwnShipMarker->SetRelativeScale3D(IconScaleForPrimitive(EHoloMapPrimitive::Cube));
 	OwnShipMarker->SetCastShadow(false);
 
 	HoloVolumeMesh = NewObject<UStaticMeshComponent>(Owner, NameFor(TEXT("HoloVolumeMesh")));
@@ -124,6 +127,7 @@ void UHolographicMapTableComponent::BuildRig()
 	HideCylinderMesh(MeridianRing);
 	HideCylinderMesh(TransverseRing);
 	HideCylinderMesh(HoloVolumeMesh);
+	HideStaleVolumeCones();
 }
 
 void UHolographicMapTableComponent::OnRegister()
@@ -251,7 +255,7 @@ void UHolographicMapTableComponent::PlaceInCabin()
 	}
 
 	BindVisualToTable(TableMesh, FVector(0.0f, 0.0f, 66.0f), FRotator::ZeroRotator, FVector(2.4f, 2.4f, 1.32f));
-	BindVisualToTable(OwnShipMarker, FVector(0.0f, 0.0f, VolumeCenterZ), FRotator::ZeroRotator, WorldSizeToMarkerScale(GetActorSizeCm(OwningShip)));
+	BindVisualToTable(OwnShipMarker, FVector(0.0f, 0.0f, VolumeCenterZ), FRotator::ZeroRotator, IconScaleForPrimitive(EHoloMapPrimitive::Cube));
 	BindVisualToTable(HoloLight, FVector(0.0f, 0.0f, VolumeCenterZ), FRotator::ZeroRotator, FVector::OneVector);
 	HideCylinderMesh(EquatorRing);
 	HideCylinderMesh(MeridianRing);
@@ -273,27 +277,78 @@ void UHolographicMapTableComponent::PlaceInCabin()
 
 UStaticMesh* UHolographicMapTableComponent::LoadPrimitiveMesh(EHoloMapPrimitive Primitive) const
 {
-	const TCHAR* Path = TEXT("/Engine/BasicShapes/Cone.Cone");
+	return GPLoadHoloPrimitiveMesh(Primitive);
+}
+
+FVector UHolographicMapTableComponent::IconScaleForPrimitive(EHoloMapPrimitive Primitive) const
+{
 	switch (Primitive)
 	{
-	case EHoloMapPrimitive::Sphere:
-		Path = TEXT("/Engine/BasicShapes/Sphere.Sphere");
-		break;
-	case EHoloMapPrimitive::Cube:
-		Path = TEXT("/Engine/BasicShapes/Cube.Cube");
-		break;
-	case EHoloMapPrimitive::Cylinder:
-		Path = TEXT("/Engine/BasicShapes/Cylinder.Cylinder");
-		break;
 	case EHoloMapPrimitive::Plane:
-		Path = TEXT("/Engine/BasicShapes/Plane.Plane");
-		break;
-	case EHoloMapPrimitive::Cone:
+		return FVector(0.10f, 0.10f, 0.02f);
 	default:
-		Path = TEXT("/Engine/BasicShapes/Cone.Cone");
-		break;
+		return FVector(0.10f, 0.10f, 0.10f);
 	}
-	return LoadObject<UStaticMesh>(nullptr, Path);
+}
+
+void UHolographicMapTableComponent::HideStaleVolumeCones()
+{
+	AActor* Owner = GetOwner();
+	if (!Owner)
+	{
+		return;
+	}
+
+	TInlineComponentArray<UStaticMeshComponent*> Meshes(Owner);
+	for (UStaticMeshComponent* Mesh : Meshes)
+	{
+		if (!Mesh || Mesh == TableMesh || Mesh == OwnShipMarker || MarkerPool.Contains(Mesh))
+		{
+			continue;
+		}
+		if (Mesh->GetAttachParent() != this)
+		{
+			continue;
+		}
+		const UStaticMesh* Asset = Mesh->GetStaticMesh();
+		if (Asset && Asset->GetName().Contains(TEXT("Cone")))
+		{
+			HideCylinderMesh(Mesh);
+		}
+	}
+}
+
+FRotator UHolographicMapTableComponent::MarkerHeading(EHoloMapPrimitive Primitive, const FVector& RelForward) const
+{
+	if (RelForward.IsNearlyZero())
+	{
+		return FRotator::ZeroRotator;
+	}
+
+	if (Primitive == EHoloMapPrimitive::Triangle || Primitive == EHoloMapPrimitive::Cone)
+	{
+		return FRotationMatrix::MakeFromZ(RelForward).Rotator();
+	}
+
+	return FRotator(0.0f, RelForward.Rotation().Yaw, 0.0f);
+}
+
+UStaticMeshComponent* UHolographicMapTableComponent::FindDisplayedMarker(const AActor* Actor) const
+{
+	if (!Actor)
+	{
+		return nullptr;
+	}
+
+	for (const FHoloMarkerInterp& State : MarkerInterps)
+	{
+		if (State.Actor.Get() == Actor && MarkerPool.IsValidIndex(State.PoolIndex))
+		{
+			return MarkerPool[State.PoolIndex].Get();
+		}
+	}
+
+	return nullptr;
 }
 
 void UHolographicMapTableComponent::BindPooledMesh(UStaticMeshComponent* Mesh)
@@ -399,7 +454,7 @@ FVector UHolographicMapTableComponent::WorldSizeToMarkerScale(const FVector& Wor
 
 void UHolographicMapTableComponent::TintMarker(UStaticMeshComponent* Mesh, const FLinearColor& Color) const
 {
-	GPApplyPolishVfxMaterial(Mesh, TEXT("circle_05"), Color);
+	GPApplyPolishSolidEmissive(Mesh, Color);
 }
 
 void UHolographicMapTableComponent::RebuildTrackedPois()
@@ -428,7 +483,7 @@ void UHolographicMapTableComponent::RebuildTrackedPois()
 		{
 			Poi = OtherShip->FindComponentByClass<UHoloMapPoiComponent>();
 		}
-		if (!Poi || !Poi->bVisibleOnMaps || Poi->GetTypedOuter<AWalkableShip>() != OtherShip)
+		if (!Poi || !Poi->bVisibleOnMaps || Poi->GetOwner() != OtherShip)
 		{
 			continue;
 		}
@@ -444,9 +499,9 @@ void UHolographicMapTableComponent::RebuildTrackedPois()
 
 		FHoloMapTrackedPoi Entry;
 		Entry.Actor = Actor;
-		Entry.Kind = Poi ? Poi->Kind : EHoloMapPoiKind::EnemyShip;
-		Entry.Primitive = Poi ? Poi->GetResolvedPrimitive() : EHoloMapPrimitive::Cone;
-		Entry.Color = Poi ? Poi->GetResolvedColor() : FLinearColor(1.0f, 0.12f, 0.08f, 1.0f);
+		Entry.Kind = EHoloMapPoiKind::EnemyShip;
+		Entry.Primitive = Poi->GetResolvedPrimitive();
+		Entry.Color = FLinearColor(1.0f, 0.12f, 0.08f, 1.0f);
 		Entry.WorldLocation = WorldLoc;
 		Entry.DistanceCm = Dist;
 
@@ -454,10 +509,55 @@ void UHolographicMapTableComponent::RebuildTrackedPois()
 		Entry.TableRelative = WorldOffsetToVolume(Local);
 
 		const FVector RelFwd = InvRot.RotateVector(Actor->GetActorForwardVector()).GetSafeNormal();
-		Entry.RelativeRotation = RelFwd.IsNearlyZero()
-			? FRotator::ZeroRotator
-			: FRotationMatrix::MakeFromZ(RelFwd).Rotator();
-		Entry.MarkerScale = WorldSizeToMarkerScale(GetActorSizeCm(Actor));
+		Entry.RelativeRotation = MarkerHeading(Entry.Primitive, RelFwd);
+		Entry.MarkerScale = IconScaleForPrimitive(Entry.Primitive);
+		TrackedPois.Add(Entry);
+	}
+
+	for (TActorIterator<ABulldogFighter> It(World); It; ++It)
+	{
+		ABulldogFighter* Fighter = *It;
+		if (!Fighter || Fighter == static_cast<AActor*>(OwningShip) || GPIsCraftWrecked(Fighter))
+		{
+			continue;
+		}
+
+		UHoloMapPoiComponent* Poi = Fighter->HoloPoi;
+		if (!Poi)
+		{
+			Poi = Fighter->FindComponentByClass<UHoloMapPoiComponent>();
+		}
+		if (!Poi || !Poi->bVisibleOnMaps || Poi->GetOwner() != Fighter)
+		{
+			continue;
+		}
+
+		const FVector WorldLoc = Fighter->GetActorLocation();
+		const float Dist = FVector::Dist(Origin, WorldLoc);
+		if (Dist > Range)
+		{
+			continue;
+		}
+
+		FHoloMapTrackedPoi Entry;
+		Entry.Actor = Fighter;
+		Entry.Kind = EHoloMapPoiKind::EnemyShip;
+		Entry.Primitive = Poi->GetResolvedPrimitive();
+		Entry.Color = FLinearColor(1.0f, 0.12f, 0.08f, 1.0f);
+		Entry.WorldLocation = WorldLoc;
+		Entry.DistanceCm = Dist;
+
+		const FVector Local = InvRot.RotateVector(WorldLoc - Origin);
+		Entry.TableRelative = WorldOffsetToVolume(Local);
+
+		const FVector RelFwd = InvRot.RotateVector(Fighter->GetActorForwardVector()).GetSafeNormal();
+		Entry.RelativeRotation = MarkerHeading(Entry.Primitive, RelFwd);
+		Entry.MarkerScale = IconScaleForPrimitive(Entry.Primitive);
+		if (GPIsOwnDeployedFighter(OwningShip, Fighter))
+		{
+			Entry.Kind = EHoloMapPoiKind::FriendlyShip;
+			Entry.Color = FLinearColor(0.2f, 1.0f, 0.35f, 1.0f);
+		}
 		TrackedPois.Add(Entry);
 	}
 
@@ -507,6 +607,7 @@ void UHolographicMapTableComponent::RebuildTrackedPois()
 	});
 
 	CaptureMarkerInterpTargets();
+	RefreshMarkers();
 }
 
 void UHolographicMapTableComponent::CaptureMarkerInterpTargets()
@@ -595,30 +696,23 @@ void UHolographicMapTableComponent::RefreshMarkers()
 
 	const bool bShow = ShouldDrawVisuals();
 	SetVisualsVisible(bShow);
-	if (!bShow)
-	{
-		for (UStaticMeshComponent* Mesh : MarkerPool)
-		{
-			if (Mesh) { Mesh->SetVisibility(false); }
-		}
-		for (UStaticMeshComponent* Mesh : AltitudeLinePool)
-		{
-			if (Mesh) { Mesh->SetVisibility(false); }
-		}
-		return;
-	}
 	if (OwnShipMarker)
 	{
+		if (UStaticMesh* CubeMesh = LoadPrimitiveMesh(EHoloMapPrimitive::Cube))
+		{
+			OwnShipMarker->SetStaticMesh(CubeMesh);
+		}
 		OwnShipMarker->SetVisibility(bShow);
 		OwnShipMarker->SetRelativeLocation(FVector(0.0f, 0.0f, VolumeCenterZ));
 		OwnShipMarker->SetRelativeRotation(FRotator::ZeroRotator);
-		OwnShipMarker->SetRelativeScale3D(WorldSizeToMarkerScale(GetActorSizeCm(OwningShip)));
+		OwnShipMarker->SetRelativeScale3D(IconScaleForPrimitive(EHoloMapPrimitive::Cube));
 		TintMarker(OwnShipMarker, FLinearColor(0.15f, 0.55f, 1.0f, 1.0f));
 	}
 	HideCylinderMesh(HoloVolumeMesh);
 	HideCylinderMesh(EquatorRing);
 	HideCylinderMesh(MeridianRing);
 	HideCylinderMesh(TransverseRing);
+	HideStaleVolumeCones();
 	for (UStaticMeshComponent* Mesh : AltitudeLinePool)
 	{
 		HideCylinderMesh(Mesh);
@@ -634,31 +728,23 @@ void UHolographicMapTableComponent::RefreshMarkers()
 			continue;
 		}
 
-		UStaticMesh* DesiredMesh = nullptr;
+		UStaticMesh* DesiredMesh = LoadPrimitiveMesh(Poi.Primitive);
 		if (AActor* Actor = Poi.Actor.Get())
 		{
 			if (UHoloMapPoiComponent* Comp = Actor->FindComponentByClass<UHoloMapPoiComponent>())
 			{
-				DesiredMesh = Comp->OverrideMesh;
+				DesiredMesh = Comp->ResolveMarkerMesh();
 			}
 		}
-		if (!DesiredMesh)
-		{
-			DesiredMesh = LoadPrimitiveMesh(Poi.Primitive);
-		}
-
-		if (DesiredMesh && Marker->GetStaticMesh() != DesiredMesh)
+		if (DesiredMesh)
 		{
 			Marker->SetStaticMesh(DesiredMesh);
 		}
 
-		FVector Scale = Poi.MarkerScale;
-		if (Poi.Primitive == EHoloMapPrimitive::Cone)
-		{
-			Scale = FVector(Poi.MarkerScale.Y, Poi.MarkerScale.Z, Poi.MarkerScale.X);
-		}
+		const FVector Scale = Poi.MarkerScale.IsNearlyZero() ? IconScaleForPrimitive(Poi.Primitive) : Poi.MarkerScale;
 
 		Marker->SetVisibility(bShow);
+		Marker->SetHiddenInGame(!bShow);
 		Marker->SetRelativeScale3D(Scale);
 		TintMarker(Marker, Poi.Color);
 	}

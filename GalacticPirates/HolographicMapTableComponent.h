@@ -60,6 +60,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Holo Map")
 	AWalkableShip* GetOwningShip() const { return OwningShip; }
 
+	void RebuildTrackedPois();
+	UStaticMeshComponent* FindDisplayedMarker(const AActor* Actor) const;
+
 protected:
 	virtual void OnRegister() override;
 	virtual void BeginPlay() override;
@@ -97,6 +100,9 @@ private:
 	UStaticMesh* LoadPrimitiveMesh(EHoloMapPrimitive Primitive) const;
 	UStaticMeshComponent* GetOrCreatePooledMesh(TArray<TObjectPtr<UStaticMeshComponent>>& Pool, int32 Index);
 	void BuildRig();
+	void HideStaleVolumeCones();
+	FVector IconScaleForPrimitive(EHoloMapPrimitive Primitive) const;
+	FRotator MarkerHeading(EHoloMapPrimitive Primitive, const FVector& RelForward) const;
 
 	bool bRigBuilt = false;
 	void TintMarker(UStaticMeshComponent* Mesh, const FLinearColor& Color) const;
@@ -107,7 +113,6 @@ private:
 	void ResolveOwningShip();
 	void PlaceInCabin();
 	void BindVisualToTable(USceneComponent* Child, const FVector& RelLoc, const FRotator& RelRot, const FVector& RelScale);
-	void RebuildTrackedPois();
 	void CaptureMarkerInterpTargets();
 	void InterpolateMarkers();
 	void RefreshMarkers();

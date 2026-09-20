@@ -2,6 +2,7 @@
 #include "WalkableShip.h"
 #include "ShipMovementComponent.h"
 #include "GalacticPiratesCharacter.h"
+#include "OccupancyComponent.h"
 #include "GalacticPirates.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputAction.h"
@@ -30,6 +31,15 @@ void UHelmComponent::BeginPlay()
 	}
 }
 
+AWalkableShip* UHelmComponent::ResolveOwningShip()
+{
+	if (!OwningShip)
+	{
+		OwningShip = Cast<AWalkableShip>(GetOwner());
+	}
+	return OwningShip;
+}
+
 void UHelmComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
@@ -46,7 +56,7 @@ void UHelmComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 
 	USceneComponent* PilotRoot = CurrentPilotRef->GetRootComponent();
 	USceneComponent* CurrentAttach = PilotRoot ? PilotRoot->GetAttachParent() : nullptr;
-	USceneComponent* Interior = OwningShip ? OwningShip->GetInteriorMesh() : nullptr;
+	USceneComponent* Interior = ResolveOwningShip() ? OwningShip->GetInteriorMesh() : nullptr;
 	if (CurrentAttach != this && CurrentAttach != Interior)
 	{
 		LockPilotToHelm(CurrentPilotRef);
@@ -61,47 +71,73 @@ void UHelmComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 
 bool UHelmComponent::TryInteract(AGalacticPiratesCharacter* Character)
 {
-	if (!OwningShip || !Character)
+	AWalkableShip* Ship = ResolveOwningShip();
+	if (!Ship || !Character)
 	{
 		UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Helm TryInteract failed: missing ship or character"));
 		return false;
 	}
 
-	if (bIsOccupied)
+	UOccupancyComponent* Seat = Ship->HelmOccupancy;
+	if (!Seat)
 	{
-		if (OwningShip->IsPilot(Character))
-		{
-			UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Helm releasing pilot %s"), *GetNameSafe(Character));
-			OwningShip->ReleasePilot(Character);
-			return true;
-		}
-		UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Helm occupied by someone else"));
 		return false;
 	}
 
-	UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Helm requesting pilot assignment for %s"), *GetNameSafe(Character));
-	return OwningShip->RequestPilotAssignment(Character);
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Helm occupancy interact for %s occupied=%s"),
+		*GetNameSafe(Character),
+		Seat->IsOccupied() ? TEXT("true") : TEXT("false"));
+	const bool bWasPilot = Ship->IsPilot(Character);
+	const bool bOk = Seat->TryOccupy(Character);
+	if (Seat->IsOccupant(Character) && Ship->GetCurrentPilot() != Character)
+	{
+		Ship->RequestPilotAssignment(Character);
+	}
+	else if (!Seat->IsOccupant(Character) && bWasPilot)
+	{
+		Ship->ReleasePilot(Character);
+	}
+	return bOk;
 }
 
 void UHelmComponent::ForceRelease()
 {
-	if (!OwningShip || !bIsOccupied)
+	AWalkableShip* Ship = ResolveOwningShip();
+	if (Ship && Ship->HelmOccupancy)
+	{
+		Ship->HelmOccupancy->ForceRelease();
+		return;
+	}
+
+	if (!Ship || !bIsOccupied)
 	{
 		return;
 	}
 
-	AGalacticPiratesCharacter* CurrentPilot = OwningShip->GetCurrentPilot();
+	AGalacticPiratesCharacter* CurrentPilot = Ship->GetCurrentPilot();
 	if (CurrentPilot)
 	{
-		OwningShip->ReleasePilot(CurrentPilot);
+		Ship->ReleasePilot(CurrentPilot);
 	}
+}
+
+bool UHelmComponent::IsOccupied() const
+{
+	if (const AWalkableShip* Ship = OwningShip ? OwningShip : Cast<AWalkableShip>(GetOwner()))
+	{
+		if (Ship->HelmOccupancy)
+		{
+			return Ship->HelmOccupancy->IsOccupied();
+		}
+	}
+	return bIsOccupied;
 }
 
 AGalacticPiratesCharacter* UHelmComponent::GetCurrentPilot() const
 {
-	if (OwningShip)
+	if (const AWalkableShip* Ship = OwningShip ? OwningShip : Cast<AWalkableShip>(GetOwner()))
 	{
-		return OwningShip->GetCurrentPilot();
+		return Ship->GetCurrentPilot();
 	}
 	return nullptr;
 }
@@ -233,6 +269,7 @@ void UHelmComponent::AddInputContextToPilot(AGalacticPiratesCharacter* Pilot)
 		{
 			Subsystem->AddMappingContext(ControlContext, IMCPriority);
 			UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipDebug] Added ship control IMC to %s priority=%d"), *GetNameSafe(Pilot), IMCPriority);
+			Pilot->FlushHeldShipInputsOnTakeHelm();
 		}
 	}
 }
@@ -307,12 +344,15 @@ void UHelmComponent::UnlockPilotFromHelm(AGalacticPiratesCharacter* Pilot)
 		return;
 	}
 
-	Pilot->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		Pilot->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 
 	if (UCharacterMovementComponent* Movement = Pilot->GetCharacterMovement())
 	{
-		Movement->SetComponentTickEnabled(true);
+		Movement->SetComponentTickEnabled(!Pilot->IsDead());
 	}
 
-	Pilot->RestoreWalkingOnShip();
+	if (!Pilot->IsDead())
+	{
+		Pilot->RestoreWalkingOnShip();
+	}
 }

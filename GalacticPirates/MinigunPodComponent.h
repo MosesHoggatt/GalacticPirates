@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Components/SceneComponent.h"
+#include "WeaponComponent.h"
 #include "MinigunPodComponent.generated.h"
 
 class AWalkableShip;
@@ -9,9 +9,10 @@ class AGalacticPiratesCharacter;
 class AHeatseekingMissile;
 class UStaticMeshComponent;
 class UPointLightComponent;
+class UOccupancyComponent;
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
-class GALACTICPIRATES_API UMinigunPodComponent : public USceneComponent
+class GALACTICPIRATES_API UMinigunPodComponent : public UWeaponComponent
 {
 	GENERATED_BODY()
 
@@ -99,6 +100,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Minigun|Fx")
 	FVector GunSightOffset = FVector(-90.0f, 0.0f, 42.0f);
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UOccupancyComponent> Occupancy;
+
 	UFUNCTION(BlueprintCallable, Category = "Minigun")
 	bool TryInteract(AGalacticPiratesCharacter* Character);
 
@@ -109,19 +113,24 @@ public:
 	bool IsCharacterInRange(const AGalacticPiratesCharacter* Character) const;
 
 	UFUNCTION(BlueprintPure, Category = "Minigun")
-	bool IsOccupied() const { return Gunner != nullptr; }
+	bool IsOccupied() const;
 
 	UFUNCTION(BlueprintPure, Category = "Minigun")
-	AGalacticPiratesCharacter* GetGunner() const { return Gunner; }
+	AGalacticPiratesCharacter* GetGunner() const;
+
+	UOccupancyComponent* GetOccupancy() const { return Occupancy; }
 
 	void ForceRelease();
 	/** Muzzle flash, tracer and report for one round; also the body of the fire multicast. */
 	void PlayShotFx(const FVector& Start, const FVector& End, bool bHit);
 	void UpdateShotFx(float DeltaTime);
 	void AddAimInput(float YawDelta, float PitchDelta);
+	float GetAimYaw() const { return AimYaw; }
+	float GetAimPitch() const { return AimPitch; }
 	void SetFiring(bool bNewFiring);
 	void ApplyAim(float NewYaw, float NewPitch);
 	void AimAtWorldLocation(const FVector& WorldLocation);
+	void RestAim();
 	void ApplyGunnerCamera();
 	FVector GetMuzzleLocation() const;
 	FVector GetMuzzleForward() const;
@@ -161,6 +170,9 @@ private:
 	int32 ShotsPlayed = 0;
 	TArray<FVector> SparkVelocity;
 	TArray<float> SparkLife;
+
+	UFUNCTION()
+	void HandleOccupancyChanged(APawn* NewOccupant, APawn* OldOccupant);
 
 	void BuildRig();
 	void Occupy(AGalacticPiratesCharacter* Character);

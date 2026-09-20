@@ -15,6 +15,7 @@ class UInputAction;
 class UInputMappingContext;
 class UQuatCamera;
 class AWalkableShip;
+class AActor;
 class UMinigunPodComponent;
 struct FInputActionValue;
 
@@ -53,6 +54,10 @@ protected:
 	/** Mouse Look Input Action */
 	UPROPERTY(EditAnywhere, Category ="Input")
 	class UInputAction* MouseLookAction;
+
+	/** Gamepad look multiplier. 3 = 200% faster than the previous 1x stick look. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (ClampMin = "0.1"))
+	float GamepadLookSensitivity = 3.0f;
 
 	/** Ship Thrust Input Action */
 	UPROPERTY(EditAnywhere, Category = "Input|Ship")
@@ -93,8 +98,14 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_OccupiedMinigun, BlueprintReadOnly, Category = "Ship")
 	TObjectPtr<UMinigunPodComponent> OccupiedMinigun;
 
+	UPROPERTY(ReplicatedUsing = OnRep_OccupiedVehicle, BlueprintReadOnly, Category = "Ship")
+	TObjectPtr<AActor> OccupiedVehicle;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Ship")
 	bool bIsAiCrew = false;
+
+	UPROPERTY(ReplicatedUsing = OnRep_Dead, BlueprintReadOnly, Category = "Ship")
+	bool bDead = false;
 
 	/** Rate at which pilot input is sent over the network */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Ship", meta = (ClampMin = "10.0", ClampMax = "60.0"))
@@ -117,6 +128,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	AWalkableShip* GetBoardedShip() const { return BoardedShip; }
 
+	UFUNCTION(BlueprintPure, Category = "Ship")
+	AActor* GetOccupiedVehicle() const { return OccupiedVehicle; }
+
+	void SetOccupiedVehicle(AActor* Vehicle);
+
 	/** Returns if the character is currently piloting a ship */
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	bool IsAiCrew() const { return bIsAiCrew; }
@@ -125,6 +141,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	bool IsPiloting() const { return bIsPiloting; }
+
+	uint32 GetLastAcceptedPilotInputSeq() const { return LastAcceptedPilotInputSeq; }
+	void AuthorityReceiveSequencedPilotInput(FVector ThrustInput, FVector RotationInput, uint32 InputSeq);
+	uint32 GetLastAcceptedMinigunAimSeq() const { return LastAcceptedMinigunAimSeq; }
+	void AuthorityReceiveSequencedMinigunAim(float YawDelta, float PitchDelta, uint32 InputSeq);
+	virtual bool IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const override;
 
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	bool IsManningMinigun() const { return OccupiedMinigun != nullptr; }
@@ -138,8 +160,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	void SetPiloting(bool bNewPiloting);
 
+	/** Replace leftover held ship commands with the keys/sticks held right now. */
+	void FlushHeldShipInputsOnTakeHelm();
+
 	/** Called when the boarded ship is destroyed */
 	void OnShipDestroyed();
+
+	UFUNCTION(BlueprintPure, Category = "Ship")
+	bool IsDead() const { return bDead; }
+
+	UFUNCTION(BlueprintCallable, Category = "Ship|Combat")
+	void DieInWreck(const FVector& Epicenter);
 
 	UInputAction* GetMoveAction() const { return MoveAction; }
 	UInputAction* GetLookAction() const { return LookAction; }
@@ -157,6 +188,7 @@ public:
 
 	void RestoreWalkingOnShip();
 	void RestoreWalkCamera();
+	void UpdateDeathCamera(float DeltaTime);
 
 	void DumpShipDebugSnapshot(const TCHAR* Reason) const;
 	void StartAutomatedShipPlaytest();
@@ -223,20 +255,32 @@ protected:
 	UFUNCTION()
 	void OnRep_OccupiedMinigun();
 
+	UFUNCTION()
+	void OnRep_OccupiedVehicle();
+
+	UFUNCTION()
+	void OnRep_Dead();
+
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_WreckRagdoll(FVector Epicenter);
+
+	void ApplyWreckRagdoll(const FVector& Epicenter);
+	void BeginLocalDeathPresentation();
+
 	/** Called when the ship's rotation is changed */
 	UFUNCTION()
 	void OnShipRotationChanged(const FQuat& NewRotation);
 
 	/** Sends the pilot input to the server */
 	UFUNCTION(Server, Unreliable, WithValidation)
-	void Server_SendPilotInput(FVector ThrustInput, FVector RotationInput);
+	void Server_SendPilotInput(FVector ThrustInput, FVector RotationInput, uint32 InputSeq);
 
 	/** Requests the server to toggle helm interaction */
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_RequestHelmInteraction();
 
 	UFUNCTION(Server, Unreliable, WithValidation)
-	void Server_SendMinigunAim(float YawDelta, float PitchDelta);
+	void Server_SendMinigunAim(float YawDelta, float PitchDelta, uint32 InputSeq);
 
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_SetMinigunFiring(bool bNewFiring);
@@ -247,6 +291,10 @@ private:
 	float TimeSinceLastPilotInputSend;
 	FVector2D HelmMouseSteer = FVector2D::ZeroVector;
 	bool bHelmMouseSteerThisFrame = false;
+	uint32 NextPilotInputSeq = 1;
+	uint32 LastAcceptedPilotInputSeq = 0;
+	uint32 NextMinigunAimSeq = 1;
+	uint32 LastAcceptedMinigunAimSeq = 0;
 
 	void MouseLookInput(const FInputActionValue& Value);
 	void ApplyHelmMouseSteer(const FVector2D& MouseDelta);
@@ -294,7 +342,7 @@ private:
 	void MaintainUprightOrientation();
 
 	/** Sends the accumulated pilot input to the server */
-	void SendAccumulatedPilotInput();
+	void SendAccumulatedPilotInput(bool bForceSend = false);
 
 	/** Sets up the character's movement base when boarded on a ship */
 	void SetupMovementBaseOnShip();

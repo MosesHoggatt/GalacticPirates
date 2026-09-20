@@ -48,6 +48,12 @@ public:
 	void SetThrustInput(const FVector& Input);
 	void SetRotationInput(const FVector& Input);
 
+	FVector GetThrustInput() const { return HeldThrustInput; }
+	FVector GetRotationInput() const { return HeldRotationInput; }
+	FVector GetAppliedThrustInput() const { return ThrustInput; }
+	FVector GetAppliedRotationInput() const { return RotationInput; }
+	bool IsVelocityOverride() const { return bVelocityOverride; }
+
 	UFUNCTION(BlueprintCallable, Category = "Ship Movement")
 	FVector GetLinearVelocity() const { return LinearVelocity; }
 
@@ -57,6 +63,7 @@ public:
 	void SetLinearVelocity(const FVector& NewVelocity);
 	void SetAngularVelocity(const FVector& NewVelocity);
 	void SetVelocityOverride(const FVector& NewLinear, const FVector& NewAngular, bool bEnable);
+	void TickPhysics(float DeltaTime);
 
 protected:
 	virtual void BeginPlay() override;
@@ -65,6 +72,8 @@ protected:
 private:
 	FVector ThrustInput;
 	FVector RotationInput;
+	FVector HeldThrustInput = FVector::ZeroVector;
+	FVector HeldRotationInput = FVector::ZeroVector;
 	FVector LinearVelocity;
 	FVector AngularVelocity;
 	FVector OverrideLinearVelocity = FVector::ZeroVector;

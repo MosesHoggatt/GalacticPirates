@@ -16,6 +16,7 @@ class GALACTICPIRATES_API UShipHudWidget : public UUserWidget
 
 public:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
+	virtual void NativeConstruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 private:

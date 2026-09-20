@@ -5,6 +5,8 @@
 #include "HoloMapTypes.h"
 #include "HoloMapPoiComponent.generated.h"
 
+class UStaticMesh;
+
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class GALACTICPIRATES_API UHoloMapPoiComponent : public USceneComponent
 {
@@ -17,7 +19,7 @@ public:
 	EHoloMapPoiKind Kind = EHoloMapPoiKind::EnemyShip;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Holo Map")
-	EHoloMapPrimitive Primitive = EHoloMapPrimitive::Cone;
+	EHoloMapPrimitive Primitive = EHoloMapPrimitive::Cube;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Holo Map")
 	bool bOverridePrimitive = false;
@@ -29,7 +31,7 @@ public:
 	bool bOverrideColor = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Holo Map")
-	FVector MarkerScale = FVector(0.24f, 0.24f, 0.42f);
+	FVector MarkerScale = FVector(0.10f, 0.10f, 0.10f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Holo Map")
 	TObjectPtr<UStaticMesh> OverrideMesh;
@@ -44,5 +46,10 @@ public:
 	EHoloMapPrimitive GetResolvedPrimitive() const;
 
 	UFUNCTION(BlueprintPure, Category = "Holo Map")
+	UStaticMesh* ResolveMarkerMesh() const;
+
+	UFUNCTION(BlueprintPure, Category = "Holo Map")
 	bool IsHostileTo(const AActor* Viewer) const;
 };
+
+UStaticMesh* GPLoadHoloPrimitiveMesh(EHoloMapPrimitive Primitive);

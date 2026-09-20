@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
 #include "CombatTypes.h"
+#include "SpaceCraft.h"
+#include "Engine/NetSerialization.h"
 #include "WalkableShip.generated.h"
 
 class UShipMovementComponent;
@@ -19,6 +21,10 @@ class UShipCrewAiComponent;
 class UBoxComponent;
 class AGalacticPiratesCharacter;
 class UWorld;
+class UPointLightComponent;
+class UHullHealthComponent;
+class UWeaponHardpointComponent;
+class UOccupancyComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnShipRotationChanged, const FQuat&, NewRotation);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPilotChanged, AGalacticPiratesCharacter*, NewPilot, AGalacticPiratesCharacter*, OldPilot);
@@ -26,7 +32,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnShipDamaged, float, DamageAmount
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnShipExploded);
 
 UCLASS()
-class GALACTICPIRATES_API AWalkableShip : public APawn
+class GALACTICPIRATES_API AWalkableShip : public APawn, public ISpaceCraft
 {
 	GENERATED_BODY()
 
@@ -46,7 +52,31 @@ public:
 	UShipMovementComponent* ShipMovement;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UHullHealthComponent* HullHealth;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UWeaponHardpointComponent* PulseHardpoint;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UWeaponHardpointComponent* MissileHardpoint;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UWeaponHardpointComponent* PortGunHardpoint;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UWeaponHardpointComponent* StarboardGunHardpoint;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	UHelmComponent* Helm;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UOccupancyComponent* HelmOccupancy;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UOccupancyComponent* PortGunOccupancy;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UOccupancyComponent* StarboardGunOccupancy;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	UShipPulseCannonComponent* PulseCannon;
@@ -118,6 +148,21 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	UBoxComponent* CombatHull;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Alarm")
+	UPointLightComponent* AlarmLightFore;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Alarm")
+	UPointLightComponent* AlarmLightMid;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Alarm")
+	UPointLightComponent* AlarmLightAft;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Alarm")
+	UPointLightComponent* AlarmLightPort;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Alarm")
+	UPointLightComponent* AlarmLightStarboard;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	USceneComponent* SpawnPoint;
 
@@ -132,6 +177,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Ship|Combat", meta = (ClampMin = "0.1"))
 	float WreckLifetime = 8.0f;
+
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "Ship|Affiliation")
+	FName AffiliationId;
 
 	UPROPERTY(BlueprintAssignable, Category = "Ship Events")
 	FOnShipRotationChanged OnShipRotationChanged;
@@ -195,6 +243,8 @@ public:
 	void ApplyPilotInput(AGalacticPiratesCharacter* Pilot, const FVector& ThrustInput, const FVector& RotationInput);
 	void HandlePlayerDisconnected(AGalacticPiratesCharacter* Character);
 
+	virtual bool IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const override;
+
 	UFUNCTION(BlueprintCallable, Category = "Ship|Combat")
 	float ApplyShipDamage(float DamageAmount, AGalacticPiratesCharacter* InstigatorCharacter, AActor* DamageCauser);
 
@@ -202,16 +252,30 @@ public:
 	void Explode();
 
 	UFUNCTION(BlueprintPure, Category = "Ship|Combat")
-	bool IsWrecked() const { return bWrecked; }
+	bool IsWrecked() const;
 
 	UFUNCTION(BlueprintPure, Category = "Ship|Combat")
-	float GetHealth() const { return CurrentHealth; }
+	float GetHealth() const;
 
 	UFUNCTION(BlueprintPure, Category = "Ship|Combat")
-	float GetHealthPercent() const { return MaxHealth > 0.0f ? CurrentHealth / MaxHealth : 0.0f; }
+	float GetHealthPercent() const;
+
+	UFUNCTION(BlueprintPure, Category = "Ship|Combat")
+	float GetMaxHealth() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Ship|Combat")
 	void SetHealth(float NewHealth);
+
+	virtual UShipMovementComponent* GetSpaceMovement() const override;
+	virtual UHullHealthComponent* GetHullHealth() const override;
+	virtual bool IsCraftWrecked() const override;
+	virtual FVector GetCraftVelocity() const override;
+	virtual USceneComponent* GetHomingSceneComponent() const override;
+	virtual bool HasHumanOccupant() const override;
+	virtual FName GetAffiliationId() const override;
+	virtual AActor* GetHomeCraft() const override;
+	virtual UOccupancyComponent* GetPilotOccupancy() const override;
+	virtual void NotifyCraftWrecked() override;
 
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	bool TryStationInteract(AGalacticPiratesCharacter* Character);
@@ -230,17 +294,14 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentPilot)
 	AGalacticPiratesCharacter* CurrentPilot;
 
-	UPROPERTY(Replicated)
+	UPROPERTY()
 	TArray<AGalacticPiratesCharacter*> PlayersAboard;
 
 	UPROPERTY(Replicated)
-	FVector ReplicatedLinearVelocity = FVector::ZeroVector;
+	FVector_NetQuantize10 ReplicatedLinearVelocity;
 
 	UPROPERTY(Replicated)
-	FVector ReplicatedAngularVelocity = FVector::ZeroVector;
-
-	UPROPERTY(ReplicatedUsing = OnRep_CurrentHealth, BlueprintReadOnly, Category = "Ship|Combat")
-	float CurrentHealth = 1200.0f;
+	FVector_NetQuantize10 ReplicatedAngularVelocity;
 
 	UPROPERTY(ReplicatedUsing = OnRep_Wrecked, BlueprintReadOnly, Category = "Ship|Combat")
 	bool bWrecked = false;
@@ -249,10 +310,10 @@ protected:
 	void OnRep_CurrentPilot(AGalacticPiratesCharacter* OldPilot);
 
 	UFUNCTION()
-	void OnRep_CurrentHealth();
+	void OnRep_Wrecked();
 
 	UFUNCTION()
-	void OnRep_Wrecked();
+	void HandleHelmOccupancy(APawn* NewOccupant, APawn* OldOccupant);
 
 	UFUNCTION(NetMulticast, Reliable)
 	void Multicast_Explode();
@@ -264,4 +325,19 @@ private:
 
 	/** Splits the hull side walls so each gun pod has a walk-through doorway. */
 	void CarveGunPodDoorways();
+	void TriggerInteriorAlarm();
+	void TickInteriorAlarm(float DeltaTime);
+	void ApplyAlarmLightFlash(float IntensityScale);
+	bool ShouldPlayInteriorAlarmAudio() const;
+	void SyncHullFromAuthoring();
+
+	UFUNCTION()
+	void HandleHullHealthChanged(float InCurrentHealth, float InMaxHealth);
+
+	UFUNCTION()
+	void HandleHullDestroyed();
+
+	float LastNotifiedHealth = 1200.0f;
+	float InteriorAlarmTime = 0.0f;
+	float InteriorSirenTimer = 0.0f;
 };

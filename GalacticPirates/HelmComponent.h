@@ -40,7 +40,7 @@ public:
 	FOnHelmOccupancyChanged OnHelmOccupancyChanged;
 
 	UFUNCTION(BlueprintCallable, Category = "Helm")
-	bool IsOccupied() const { return bIsOccupied; }
+	bool IsOccupied() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Helm")
 	bool TryInteract(AGalacticPiratesCharacter* Character);
@@ -72,6 +72,7 @@ private:
 	UInputMappingContext* RuntimeShipControlIMC = nullptr;
 
 	UInputMappingContext* GetOrCreateShipControlContext(AGalacticPiratesCharacter* Pilot);
+	AWalkableShip* ResolveOwningShip();
 	void AddInputContextToPilot(AGalacticPiratesCharacter* Pilot);
 	void RemoveInputContextFromPilot(AGalacticPiratesCharacter* Pilot);
 	void LockPilotToHelm(AGalacticPiratesCharacter* Pilot);

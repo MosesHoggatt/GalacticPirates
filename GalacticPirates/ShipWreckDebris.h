@@ -19,6 +19,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Ship|Combat")
 	void InitializeFromShip(AWalkableShip* Ship);
+	void InitializeFromActor(AActor* Actor);
 
 protected:
 	virtual void BeginPlay() override;
@@ -37,4 +38,7 @@ private:
 
 	UFUNCTION()
 	void KickFragments();
+
+public:
+	static void ApplyWreckKick(UPrimitiveComponent* Comp, const FVector& Epicenter);
 };

@@ -20,6 +20,7 @@ UENUM(BlueprintType)
 enum class EHoloMapPrimitive : uint8
 {
 	Cone UMETA(DisplayName = "Cone"),
+	Triangle UMETA(DisplayName = "Triangle"),
 	Sphere UMETA(DisplayName = "Sphere"),
 	Cube UMETA(DisplayName = "Cube"),
 	Cylinder UMETA(DisplayName = "Cylinder"),
@@ -38,7 +39,7 @@ struct GALACTICPIRATES_API FHoloMapTrackedPoi
 	EHoloMapPoiKind Kind = EHoloMapPoiKind::Unknown;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Holo Map")
-	EHoloMapPrimitive Primitive = EHoloMapPrimitive::Cone;
+	EHoloMapPrimitive Primitive = EHoloMapPrimitive::Cube;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Holo Map")
 	FLinearColor Color = FLinearColor::Red;

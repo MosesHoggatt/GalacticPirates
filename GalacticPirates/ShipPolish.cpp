@@ -74,18 +74,117 @@ static bool GPParseWavFile(const FString& FilePath, FPolishClip& OutClip)
 		Offset += ChunkSize + (ChunkSize & 1);
 	}
 
-	if (!PCMPtr || PCMSize <= 0 || BitsPerSample != 16 || Channels <= 0 || SampleRate <= 0)
+	if (!PCMPtr || PCMSize <= 0 || Channels <= 0 || SampleRate <= 0)
 	{
 		return false;
 	}
 
-	OutClip.PCM.SetNumUninitialized(PCMSize);
-	FMemory::Memcpy(OutClip.PCM.GetData(), PCMPtr, PCMSize);
+	if (BitsPerSample == 16)
+	{
+		OutClip.PCM.SetNumUninitialized(PCMSize);
+		FMemory::Memcpy(OutClip.PCM.GetData(), PCMPtr, PCMSize);
+	}
+	else if (BitsPerSample == 24)
+	{
+		const int32 FrameBytes = Channels * 3;
+		if (FrameBytes <= 0 || PCMSize < FrameBytes)
+		{
+			return false;
+		}
+		const int32 Frames = PCMSize / FrameBytes;
+		OutClip.PCM.SetNumUninitialized(Frames * Channels * 2);
+		int32 Write = 0;
+		for (int32 Frame = 0; Frame < Frames; ++Frame)
+		{
+			for (int32 Channel = 0; Channel < Channels; ++Channel)
+			{
+				const int32 SampleIndex = (Frame * Channels + Channel) * 3;
+				int32 Sample = PCMPtr[SampleIndex] | (PCMPtr[SampleIndex + 1] << 8) | (PCMPtr[SampleIndex + 2] << 16);
+				if (Sample & 0x800000)
+				{
+					Sample |= 0xFF000000;
+				}
+				const int16 Packed = static_cast<int16>(Sample >> 8);
+				OutClip.PCM[Write++] = static_cast<uint8>(Packed & 0xff);
+				OutClip.PCM[Write++] = static_cast<uint8>((Packed >> 8) & 0xff);
+			}
+		}
+	}
+	else
+	{
+		return false;
+	}
+
 	OutClip.SampleRate = SampleRate;
 	OutClip.NumChannels = Channels;
-	const float BytesPerSecond = static_cast<float>(SampleRate * Channels * (BitsPerSample / 8));
-	OutClip.Duration = BytesPerSecond > 0.0f ? static_cast<float>(PCMSize) / BytesPerSecond : 0.1f;
+	const int32 BytesPerFrame = Channels * 2;
+	OutClip.Duration = BytesPerFrame > 0 ? static_cast<float>(OutClip.PCM.Num()) / static_cast<float>(SampleRate * BytesPerFrame) : 0.1f;
 	return true;
+}
+
+static void GPSynthesizeAlarmClip(FPolishClip& OutClip)
+{
+	const int32 SampleRate = 44100;
+	const float ToneSeconds[] = { 0.28f, 0.34f, 0.28f, 0.34f };
+	const float ToneFreqs[] = { 880.0f, 554.0f, 880.0f, 554.0f };
+	const int32 ToneCount = 4;
+
+	OutClip.SampleRate = SampleRate;
+	OutClip.NumChannels = 1;
+	OutClip.PCM.Reset();
+
+	int32 TotalSamples = 0;
+	for (int32 Tone = 0; Tone < ToneCount; ++Tone)
+	{
+		TotalSamples += FMath::Max(1, FMath::RoundToInt(ToneSeconds[Tone] * SampleRate));
+	}
+	OutClip.PCM.SetNumUninitialized(TotalSamples * 2);
+
+	int32 Write = 0;
+	for (int32 Tone = 0; Tone < ToneCount; ++Tone)
+	{
+		const int32 Count = FMath::Max(1, FMath::RoundToInt(ToneSeconds[Tone] * SampleRate));
+		const float Seconds = ToneSeconds[Tone];
+		const float Freq = ToneFreqs[Tone];
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const float Time = static_cast<float>(Index) / static_cast<float>(SampleRate);
+			const float Attack = FMath::Clamp(Time / 0.012f, 0.0f, 1.0f);
+			const float Release = FMath::Clamp((Seconds - Time) / 0.03f, 0.0f, 1.0f);
+			const float TwoPi = 2.0f * PI * Freq * Time;
+			const float Sample =
+				0.58f * FMath::Sin(TwoPi) +
+				0.22f * FMath::Sin(TwoPi * 2.0f) +
+				0.10f * FMath::Sin(TwoPi * 3.0f);
+			const int16 Pcm = static_cast<int16>(FMath::Clamp(Sample * Attack * Release, -1.0f, 1.0f) * 30000.0f);
+			OutClip.PCM[Write++] = static_cast<uint8>(Pcm & 0xff);
+			OutClip.PCM[Write++] = static_cast<uint8>((Pcm >> 8) & 0xff);
+		}
+	}
+
+	OutClip.Duration = static_cast<float>(TotalSamples) / static_cast<float>(SampleRate);
+}
+
+static void GPSynthesizeSignalLostClip(FPolishClip& OutClip)
+{
+	const int32 SampleRate = 44100;
+	const int32 TotalSamples = SampleRate * 3;
+	OutClip.SampleRate = SampleRate;
+	OutClip.NumChannels = 1;
+	OutClip.PCM.SetNumUninitialized(TotalSamples * 2);
+
+	FRandomStream Rng(90210);
+	for (int32 Index = 0; Index < TotalSamples; ++Index)
+	{
+		const float Time = static_cast<float>(Index) / static_cast<float>(SampleRate);
+		const float Envelope = FMath::Clamp(Time / 0.08f, 0.0f, 1.0f) * FMath::Clamp((3.0f - Time) / 0.35f, 0.0f, 1.0f);
+		const float Noise = (Rng.FRand() * 2.0f - 1.0f);
+		const float Whine = 0.18f * FMath::Sin(2.0f * PI * (920.0f + 40.0f * FMath::Sin(Time * 17.0f)) * Time);
+		const int16 Pcm = static_cast<int16>(FMath::Clamp((0.72f * Noise + Whine) * Envelope, -1.0f, 1.0f) * 24000.0f);
+		OutClip.PCM[Index * 2] = static_cast<uint8>(Pcm & 0xff);
+		OutClip.PCM[Index * 2 + 1] = static_cast<uint8>((Pcm >> 8) & 0xff);
+	}
+	OutClip.Duration = 3.0f;
 }
 
 static const FPolishClip* GPGetPolishClip(const TCHAR* AssetName)
@@ -103,13 +202,24 @@ static const FPolishClip* GPGetPolishClip(const TCHAR* AssetName)
 
 	const FString DiskPath = FPaths::ProjectContentDir() / TEXT("Polish/Audio") / FString(AssetName) + TEXT(".wav");
 	FPolishClip Clip;
-	if (!GPParseWavFile(DiskPath, Clip))
+	if (GPParseWavFile(DiskPath, Clip))
 	{
-		UE_LOG(LogGalacticPirates, Verbose, TEXT("[Polish] Missing wav %s"), *DiskPath);
-		return nullptr;
+		return &GPolishClips.Add(Key, MoveTemp(Clip));
 	}
 
-	return &GPolishClips.Add(Key, MoveTemp(Clip));
+	if (FCString::Stricmp(AssetName, TEXT("SFX_Alarm")) == 0)
+	{
+		GPSynthesizeAlarmClip(Clip);
+		return &GPolishClips.Add(Key, MoveTemp(Clip));
+	}
+	if (FCString::Stricmp(AssetName, TEXT("SFX_SignalLost")) == 0)
+	{
+		GPSynthesizeSignalLostClip(Clip);
+		return &GPolishClips.Add(Key, MoveTemp(Clip));
+	}
+
+	UE_LOG(LogGalacticPirates, Verbose, TEXT("[Polish] Missing wav %s"), *DiskPath);
+	return nullptr;
 }
 
 static USoundWaveProcedural* GPMakeProceduralWave(const FPolishClip& Clip)
@@ -131,15 +241,15 @@ USoundBase* GPLoadPolishSound(const TCHAR* AssetName)
 		return nullptr;
 	}
 
+	if (const FPolishClip* Clip = GPGetPolishClip(AssetName))
+	{
+		return GPMakeProceduralWave(*Clip);
+	}
+
 	const FString Path = FString::Printf(TEXT("/Game/Polish/Audio/%s.%s"), AssetName, AssetName);
 	if (USoundBase* Sound = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet)))
 	{
 		return Sound;
-	}
-
-	if (const FPolishClip* Clip = GPGetPolishClip(AssetName))
-	{
-		return GPMakeProceduralWave(*Clip);
 	}
 
 	return nullptr;
@@ -228,6 +338,40 @@ UMaterialInstanceDynamic* GPApplyPolishVfxMaterial(UPrimitiveComponent* Mesh, co
 	if (UTexture2D* Texture = GPLoadPolishTexture(TextureName))
 	{
 		MID->SetTextureParameterValue(TEXT("Texture"), Texture);
+	}
+
+	MID->SetVectorParameterValue(TEXT("Color"), Color);
+	MID->SetVectorParameterValue(TEXT("EmissiveColor"), Color);
+	MID->SetVectorParameterValue(TEXT("TintColorAndOpacity"), Color);
+	return MID;
+}
+
+UMaterialInstanceDynamic* GPApplyPolishSolidEmissive(UPrimitiveComponent* Mesh, const FLinearColor& Color)
+{
+	if (!Mesh)
+	{
+		return nullptr;
+	}
+
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/EmissiveMeshMaterial.EmissiveMeshMaterial"));
+	if (!Base)
+	{
+		Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/Widget3DPassThrough.Widget3DPassThrough"));
+	}
+	if (!Base)
+	{
+		Base = Mesh->GetMaterial(0);
+	}
+	if (!Base)
+	{
+		return nullptr;
+	}
+
+	UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(Mesh->GetMaterial(0));
+	if (!MID || MID->GetBaseMaterial() != Base->GetBaseMaterial())
+	{
+		MID = UMaterialInstanceDynamic::Create(Base, Mesh);
+		Mesh->SetMaterial(0, MID);
 	}
 
 	MID->SetVectorParameterValue(TEXT("Color"), Color);

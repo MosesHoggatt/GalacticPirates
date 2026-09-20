@@ -3,9 +3,13 @@
 #include "GalacticPiratesGameMode.h"
 #include "GalacticPiratesCharacter.h"
 #include "GalacticPirates.h"
+#include "GalacticPiratesHUD.h"
 #include "WalkableShip.h"
+#include "BulldogFighter.h"
 #include "HoloMapPoiComponent.h"
 #include "HoloMapTypes.h"
+#include "OccupancyComponent.h"
+#include "CraftWreck.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Engine/EngineTypes.h"
@@ -14,11 +18,27 @@
 AGalacticPiratesGameMode::AGalacticPiratesGameMode()
 {
 	bUseSeamlessTravel = true;
+	HUDClass = AGalacticPiratesHUD::StaticClass();
 
 	static ConstructorHelpers::FClassFinder<AWalkableShip> ShipBP(TEXT("/Game/Ships/Debug/BP_DebugWalkableShip"));
 	if (ShipBP.Succeeded())
 	{
 		DefaultWalkableShipClass = ShipBP.Class;
+	}
+}
+
+void AGalacticPiratesGameMode::StartPlay()
+{
+	Super::StartPlay();
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client)
+	{
+		return;
+	}
+
+	if (AWalkableShip* Ship = AWalkableShip::FindPersistentShip(World))
+	{
+		ABulldogFighter::SpawnNearShip(World, Ship);
 	}
 }
 
@@ -47,16 +67,8 @@ void AGalacticPiratesGameMode::RestartPlayer(AController* NewPlayer)
 	AGalacticPiratesCharacter* Character = Cast<AGalacticPiratesCharacter>(NewPlayer->GetPawn());
 	if (!Character)
 	{
-		for (TActorIterator<AGalacticPiratesCharacter> It(GetWorld()); It; ++It)
-		{
-			if (*It && (*It)->GetController() == nullptr)
-			{
-				NewPlayer->Possess(*It);
-				Character = *It;
-				UE_LOG(LogGalacticPirates, Warning, TEXT("[DedicatedNet] Possessed existing character %s"), *GetNameSafe(Character));
-				break;
-			}
-		}
+		Super::RestartPlayer(NewPlayer);
+		Character = Cast<AGalacticPiratesCharacter>(NewPlayer->GetPawn());
 	}
 
 	if (Character && Character->GetBoardedShip() != Ship)
@@ -71,6 +83,13 @@ void AGalacticPiratesGameMode::Logout(AController* Exiting)
 	{
 		if (AGalacticPiratesCharacter* Character = Cast<AGalacticPiratesCharacter>(Pawn))
 		{
+			if (AActor* Vehicle = Character->GetOccupiedVehicle())
+			{
+				if (UOccupancyComponent* Seat = GPFindPilotOccupancy(Vehicle))
+				{
+					Seat->ForceRelease();
+				}
+			}
 			if (AWalkableShip* Ship = Character->GetBoardedShip())
 			{
 				Ship->HandlePlayerDisconnected(Character);
@@ -95,6 +114,7 @@ AWalkableShip* AGalacticPiratesGameMode::GetOrSpawnPersistentShip()
 		{
 			Existing->HoloPoi->Kind = EHoloMapPoiKind::OwnShip;
 		}
+		ABulldogFighter::SpawnNearShip(World, Existing);
 		return Existing;
 	}
 
@@ -117,5 +137,6 @@ AWalkableShip* AGalacticPiratesGameMode::GetOrSpawnPersistentShip()
 		Spawned->HoloPoi->Kind = EHoloMapPoiKind::OwnShip;
 	}
 	UE_LOG(LogGalacticPirates, Warning, TEXT("[DedicatedNet] Spawned persistent walkable ship %s"), *GetNameSafe(Spawned));
+	ABulldogFighter::SpawnNearShip(World, Spawned);
 	return Spawned;
 }

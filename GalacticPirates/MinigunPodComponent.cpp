@@ -1,8 +1,10 @@
 #include "MinigunPodComponent.h"
 #include "WalkableShip.h"
 #include "GalacticPiratesCharacter.h"
+#include "OccupancyComponent.h"
 #include "HeatseekingMissile.h"
 #include "CombatTypes.h"
+#include "HullHealthComponent.h"
 #include "ShipPolish.h"
 #include "GalacticPirates.h"
 #include "Net/UnrealNetwork.h"
@@ -147,6 +149,19 @@ void UMinigunPodComponent::BuildRig()
 		SparkVelocity.Add(FVector::ZeroVector);
 		SparkLife.Add(0.0f);
 	}
+
+	if (!Occupancy)
+	{
+		Occupancy = NewObject<UOccupancyComponent>(Owner, NameFor(TEXT("Occupancy")));
+	}
+	Occupancy->InteractRange = InteractRange;
+	Occupancy->SetIsReplicated(true);
+	if (Occupancy->GetAttachParent() != this)
+	{
+		Attach(Occupancy, this);
+	}
+	Occupancy->OnOccupancyChanged.RemoveAll(this);
+	Occupancy->OnOccupancyChanged.AddDynamic(this, &UMinigunPodComponent::HandleOccupancyChanged);
 }
 
 void UMinigunPodComponent::BeginPlay()
@@ -170,7 +185,6 @@ void UMinigunPodComponent::BeginPlay()
 void UMinigunPodComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-	DOREPLIFETIME(UMinigunPodComponent, Gunner);
 	DOREPLIFETIME(UMinigunPodComponent, AimYaw);
 	DOREPLIFETIME(UMinigunPodComponent, AimPitch);
 }
@@ -211,6 +225,10 @@ void UMinigunPodComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 
 bool UMinigunPodComponent::IsCharacterInRange(const AGalacticPiratesCharacter* Character) const
 {
+	if (Occupancy)
+	{
+		return Occupancy->IsInRange(Character);
+	}
 	if (!Character)
 	{
 		return false;
@@ -218,45 +236,61 @@ bool UMinigunPodComponent::IsCharacterInRange(const AGalacticPiratesCharacter* C
 	return FVector::Dist(Character->GetActorLocation(), GetComponentLocation()) <= InteractRange;
 }
 
+bool UMinigunPodComponent::IsOccupied() const
+{
+	return GetGunner() != nullptr;
+}
+
+AGalacticPiratesCharacter* UMinigunPodComponent::GetGunner() const
+{
+	if (Occupancy)
+	{
+		return Cast<AGalacticPiratesCharacter>(Occupancy->GetOccupant());
+	}
+	return Gunner;
+}
+
 bool UMinigunPodComponent::TryInteract(AGalacticPiratesCharacter* Character)
 {
-	if (!GetOwner() || !GetOwner()->HasAuthority() || !Character || !OwningShip)
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !Character || !Occupancy)
 	{
 		return false;
 	}
-	if (OwningShip->IsWrecked() || Character->GetBoardedShip() != OwningShip)
+	if ((OwningShip && OwningShip->IsWrecked()) || Character->IsPiloting())
 	{
 		return false;
 	}
-
-	if (Gunner == Character)
+	if (UMinigunPodComponent* Other = Character->GetOccupiedMinigun())
 	{
-		Vacate();
-		return true;
+		if (Other != this)
+		{
+			Other->ForceRelease();
+		}
 	}
-
-	if (Gunner)
-	{
-		return false;
-	}
-
-	if (Character->IsPiloting() || Character->IsManningMinigun())
-	{
-		return false;
-	}
-
-	if (!IsCharacterInRange(Character))
-	{
-		return false;
-	}
-
-	Occupy(Character);
-	return true;
+	return Occupancy->TryOccupy(Character);
 }
 
 void UMinigunPodComponent::ForceRelease()
 {
+	if (Occupancy)
+	{
+		Occupancy->ForceRelease();
+		return;
+	}
 	if (GetOwner() && GetOwner()->HasAuthority())
+	{
+		Vacate();
+	}
+}
+
+void UMinigunPodComponent::HandleOccupancyChanged(APawn* NewOccupant, APawn* OldOccupant)
+{
+	if (AGalacticPiratesCharacter* NewGunner = Cast<AGalacticPiratesCharacter>(NewOccupant))
+	{
+		Occupy(NewGunner);
+		return;
+	}
+	if (OldOccupant || Gunner)
 	{
 		Vacate();
 	}
@@ -264,6 +298,14 @@ void UMinigunPodComponent::ForceRelease()
 
 void UMinigunPodComponent::Occupy(AGalacticPiratesCharacter* Character)
 {
+	if (!Character || Gunner == Character)
+	{
+		return;
+	}
+	if (Gunner && Gunner != Character)
+	{
+		Vacate();
+	}
 	Gunner = Character;
 	bFiring = false;
 	AimYaw = 0.0f;
@@ -276,9 +318,14 @@ void UMinigunPodComponent::Occupy(AGalacticPiratesCharacter* Character)
 
 void UMinigunPodComponent::Vacate()
 {
+	if (!Gunner)
+	{
+		return;
+	}
 	AGalacticPiratesCharacter* Previous = Gunner;
 	bFiring = false;
 	Gunner = nullptr;
+	RestAim();
 	if (Previous)
 	{
 		UnlockGunner(Previous);
@@ -338,13 +385,26 @@ void UMinigunPodComponent::ApplyAim(float NewYaw, float NewPitch)
 	ApplyMountRotation();
 }
 
+void UMinigunPodComponent::RestAim()
+{
+	ApplyAim(0.0f, 0.0f);
+}
+
 void UMinigunPodComponent::AddAimInput(float YawDelta, float PitchDelta)
 {
+	if (!Gunner)
+	{
+		return;
+	}
 	ApplyAim(AimYaw + YawDelta * AimSensitivity, AimPitch + PitchDelta * AimSensitivity);
 }
 
 void UMinigunPodComponent::AimAtWorldLocation(const FVector& WorldLocation)
 {
+	if (!Gunner)
+	{
+		return;
+	}
 	const FVector WorldDir = (WorldLocation - GetMuzzleLocation()).GetSafeNormal();
 	if (WorldDir.IsNearlyZero())
 	{
@@ -426,13 +486,9 @@ float UMinigunPodComponent::DamageForActor(AActor* HitActor) const
 	{
 		return MissileDamage;
 	}
-	if (AWalkableShip* Ship = Cast<AWalkableShip>(HitActor))
+	if (UHullHealthComponent* Hull = GPFindHullHealth(HitActor))
 	{
-		if (Ship->ArmorClass == EShipArmorClass::Light)
-		{
-			return LightShipDamage;
-		}
-		return ArmoredShipDamage;
+		return Hull->ArmorClass == EShipArmorClass::Armored ? LightShipDamage : LightShipDamage;
 	}
 	return 0.0f;
 }
@@ -477,38 +533,22 @@ void UMinigunPodComponent::FireTrace()
 	{
 		TracerEnd = Hit.ImpactPoint;
 		AActor* HitActor = Hit.GetActor();
+		if (!HitActor && Hit.GetComponent())
+		{
+			HitActor = Hit.GetComponent()->GetOwner();
+		}
 		if (AHeatseekingMissile* Missile = Cast<AHeatseekingMissile>(HitActor))
 		{
 			Missile->ApplyMinigunHit(MissileDamage, Gunner);
 		}
-		else if (AWalkableShip* Ship = Cast<AWalkableShip>(HitActor))
+		else if (HitActor && HitActor != OwningShip)
 		{
-			if (Ship != OwningShip)
-			{
-				const float Damage = DamageForActor(Ship);
-				if (Damage > 0.0f)
-				{
-					Ship->ApplyShipDamage(Damage, Gunner, OwningShip);
-				}
-			}
-		}
-		else if (Hit.GetComponent())
-		{
-			if (AHeatseekingMissile* CompMissile = Cast<AHeatseekingMissile>(Hit.GetComponent()->GetOwner()))
-			{
-				CompMissile->ApplyMinigunHit(MissileDamage, Gunner);
-			}
-			else if (AWalkableShip* CompShip = Cast<AWalkableShip>(Hit.GetComponent()->GetOwner()))
-			{
-				if (CompShip != OwningShip)
-				{
-					const float Damage = DamageForActor(CompShip);
-					if (Damage > 0.0f)
-					{
-						CompShip->ApplyShipDamage(Damage, Gunner, OwningShip);
-					}
-				}
-			}
+			FSpaceDamageEvent Event;
+			Event.Amount = LightShipDamage;
+			Event.Kind = ESpaceDamageKind::Ballistic;
+			Event.InstigatorPawn = Gunner;
+			Event.Causer = OwningShip;
+			GPApplySpaceDamage(HitActor, Event);
 		}
 	}
 
@@ -570,10 +610,12 @@ void UMinigunPodComponent::PlayShotFx(const FVector& Start, const FVector& End, 
 		SpawnImpactSparks(End, Incoming);
 	}
 
-	if (ShotsPlayed % 2 == 0)
+	const bool bLocalGunner = Gunner && Gunner->IsLocallyControlled();
+	if (bLocalGunner)
 	{
-		GPPlayPolishSoundAt(this, TEXT("SFX_PulseFire"), Start, 0.4f);
+		GPPlayPolishSound2D(this, TEXT("SFX_Minigun"), 0.55f);
 	}
+	GPPlayPolishSoundAt(this, TEXT("SFX_Minigun"), Start, bLocalGunner ? 0.35f : 0.7f);
 }
 
 void UMinigunPodComponent::PlaceTracer(const FVector& Start, const FVector& End)

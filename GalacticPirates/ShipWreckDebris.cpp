@@ -67,6 +67,25 @@ UPrimitiveComponent* AShipWreckDebris::SpawnPhysicsCube(const FTransform& Transf
 	return Chunk;
 }
 
+void AShipWreckDebris::ApplyWreckKick(UPrimitiveComponent* Comp, const FVector& Epicenter)
+{
+	if (!Comp)
+	{
+		return;
+	}
+
+	Comp->SetSimulatePhysics(true);
+	Comp->SetEnableGravity(false);
+	Comp->SetLinearDamping(0.04f);
+	Comp->SetAngularDamping(0.06f);
+	Comp->WakeAllRigidBodies();
+
+	const FVector Away = (Comp->GetComponentLocation() - Epicenter).GetSafeNormal();
+	const FVector Dir = Away.IsNearlyZero() ? FMath::VRand() : Away;
+	Comp->AddImpulse(Dir * 1800.0f + FMath::VRand() * 500.0f, NAME_None, true);
+	Comp->AddTorqueInRadians(FMath::VRand() * 12.0f, NAME_None, true);
+}
+
 void AShipWreckDebris::KickFragments()
 {
 	int32 Kicked = 0;
@@ -77,17 +96,9 @@ void AShipWreckDebris::KickFragments()
 			continue;
 		}
 
-		Chunk->SetSimulatePhysics(true);
-		Chunk->SetEnableGravity(false);
-		Chunk->SetLinearDamping(0.04f);
-		Chunk->SetAngularDamping(0.06f);
+		Chunk->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 		Chunk->SetMassOverrideInKg(NAME_None, 40.0f, true);
-		Chunk->WakeAllRigidBodies();
-
-		const FVector Away = (Chunk->GetComponentLocation() - Epicenter).GetSafeNormal();
-		const FVector Dir = Away.IsNearlyZero() ? FMath::VRand() : Away;
-		Chunk->AddImpulse(Dir * 1800.0f + FMath::VRand() * 500.0f, NAME_None, true);
-		Chunk->AddTorqueInRadians(FMath::VRand() * 12.0f, NAME_None, true);
+		ApplyWreckKick(Chunk, Epicenter);
 		++Kicked;
 	}
 
@@ -98,7 +109,12 @@ void AShipWreckDebris::KickFragments()
 
 void AShipWreckDebris::InitializeFromShip(AWalkableShip* Ship)
 {
-	if (!Ship)
+	InitializeFromActor(Ship);
+}
+
+void AShipWreckDebris::InitializeFromActor(AActor* Actor)
+{
+	if (!Actor)
 	{
 		return;
 	}
@@ -111,8 +127,8 @@ void AShipWreckDebris::InitializeFromShip(AWalkableShip* Ship)
 		return;
 	}
 
-	Epicenter = Ship->GetActorLocation();
-	SetActorLocationAndRotation(Epicenter, Ship->GetActorRotation());
+	Epicenter = Actor->GetActorLocation();
+	SetActorLocationAndRotation(Epicenter, Actor->GetActorRotation());
 	SetLifeSpan(24.0f);
 
 	UPointLightComponent* BlastLight = NewObject<UPointLightComponent>(this);
@@ -124,7 +140,7 @@ void AShipWreckDebris::InitializeFromShip(AWalkableShip* Ship)
 	BlastLight->RegisterComponent();
 
 	TArray<UStaticMeshComponent*> SourceMeshes;
-	Ship->GetComponents<UStaticMeshComponent>(SourceMeshes);
+	Actor->GetComponents<UStaticMeshComponent>(SourceMeshes);
 
 	int32 ClonedMeshes = 0;
 	for (UStaticMeshComponent* Source : SourceMeshes)
@@ -158,7 +174,7 @@ void AShipWreckDebris::InitializeFromShip(AWalkableShip* Ship)
 						(Y + 0.5f) / DivY * 2.0f - 1.0f,
 						(Z + 0.5f) / FMath::Max(DivZ, 1) * 2.0f - 1.0f) * Extent * 0.72f;
 					FTransform PieceTM;
-					PieceTM.SetLocation(Bounds.Origin + Ship->GetActorQuat().RotateVector(Local));
+					PieceTM.SetLocation(Bounds.Origin + Actor->GetActorQuat().RotateVector(Local));
 					PieceTM.SetRotation(Source->GetComponentQuat());
 					PieceTM.SetScale3D(Scale);
 					SpawnPhysicsCube(PieceTM, CubeMesh, FLinearColor(0.55f, 0.42f, 0.28f, 1.0f));
@@ -168,9 +184,10 @@ void AShipWreckDebris::InitializeFromShip(AWalkableShip* Ship)
 		++ClonedMeshes;
 	}
 
-	const FVector HullExtent = Ship->CombatHull ? Ship->CombatHull->GetScaledBoxExtent() : FVector(900.0f, 500.0f, 320.0f);
-	const FVector HullCenter = Ship->CombatHull ? Ship->CombatHull->GetComponentLocation() : Epicenter;
-	const FQuat ShipRot = Ship->GetActorQuat();
+	AWalkableShip* Walkable = Cast<AWalkableShip>(Actor);
+	const FVector HullExtent = (Walkable && Walkable->CombatHull) ? Walkable->CombatHull->GetScaledBoxExtent() : FVector(900.0f, 500.0f, 320.0f);
+	const FVector HullCenter = (Walkable && Walkable->CombatHull) ? Walkable->CombatHull->GetComponentLocation() : Epicenter;
+	const FQuat ShipRot = Actor->GetActorQuat();
 	for (int32 Index = 0; Index < 18; ++Index)
 	{
 		const FVector LocalOffset = FVector(

@@ -1,6 +1,7 @@
 #include "ShipOrbitAiComponent.h"
 #include "WalkableShip.h"
 #include "ShipMovementComponent.h"
+#include "SpaceCraft.h"
 #include "GalacticPirates.h"
 #include "EngineUtils.h"
 
@@ -25,7 +26,7 @@ void UShipOrbitAiComponent::BeginPlay()
 	OrbitRadius += static_cast<float>(Hash % 9) * 250.0f;
 }
 
-AWalkableShip* UShipOrbitAiComponent::FindOrbitTarget() const
+AActor* UShipOrbitAiComponent::FindOrbitTarget() const
 {
 	UWorld* World = GetWorld();
 	if (!World || !OwningShip)
@@ -33,17 +34,17 @@ AWalkableShip* UShipOrbitAiComponent::FindOrbitTarget() const
 		return nullptr;
 	}
 
-	AWalkableShip* Best = nullptr;
+	AActor* Best = nullptr;
 	float BestDist = TNumericLimits<float>::Max();
-	for (TActorIterator<AWalkableShip> It(World); It; ++It)
+	for (TActorIterator<APawn> It(World); It; ++It)
 	{
-		AWalkableShip* Candidate = *It;
-		if (!Candidate || Candidate == OwningShip || Candidate->IsWrecked())
+		APawn* Candidate = *It;
+		ISpaceCraft* Craft = GPAsSpaceCraft(Candidate);
+		if (!Candidate || Candidate == OwningShip || !Craft || Craft->IsCraftWrecked() || !Craft->HasHumanOccupant())
 		{
 			continue;
 		}
-
-		if (!Candidate->HasHumanCrew())
+		if (!GPAreHostile(OwningShip, Candidate))
 		{
 			continue;
 		}
@@ -58,7 +59,7 @@ AWalkableShip* UShipOrbitAiComponent::FindOrbitTarget() const
 	return Best;
 }
 
-void UShipOrbitAiComponent::ApplyOrbitSteering(AWalkableShip* Target)
+void UShipOrbitAiComponent::ApplyOrbitSteering(AActor* Target)
 {
 	if (!OwningShip || !Target || !OwningShip->ShipMovement)
 	{
@@ -122,7 +123,7 @@ void UShipOrbitAiComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 		return;
 	}
 
-	if (AWalkableShip* Target = FindOrbitTarget())
+	if (AActor* Target = FindOrbitTarget())
 	{
 		ApplyOrbitSteering(Target);
 	}

@@ -24,8 +24,12 @@
 #include "GameFramework/PlayerInput.h"
 #include "EngineUtils.h"
 #include "InputCoreTypes.h"
+#include "Misc/CommandLine.h"
+#include "HAL/PlatformMisc.h"
 #include "WeaponTerminalComponent.h"
 #include "ShipPulseCannonComponent.h"
+#include "ShipOrbitAiComponent.h"
+#include "ShipCrewAiComponent.h"
 
 TAutoConsoleVariable<int32> CVarGPShipDebug(
 	TEXT("gp.ShipDebug"),
@@ -50,6 +54,23 @@ TAutoConsoleVariable<int32> CVarGPDedicatedNetTest(
 	0,
 	TEXT("Run the dedicated-server persistent-world boarding and helm test (1=on)."),
 	ECVF_Default);
+
+TAutoConsoleVariable<int32> CVarGPShipMoveLog(
+	TEXT("gp.ShipMoveLog"),
+	0,
+	TEXT("Log ship thrust/rotation/velocity every movement tick (1=throttled, 2=every SetInput)."),
+	ECVF_Default);
+
+TAutoConsoleVariable<int32> CVarGPShipMoveProbe(
+	TEXT("gp.ShipMoveProbe"),
+	0,
+	TEXT("Set to 1 to start the ship movement probe (prefer server console)."),
+	ECVF_Default);
+
+int32 GPShipMoveLogLevel()
+{
+	return CVarGPShipMoveLog.GetValueOnGameThread();
+}
 
 int32 GPShipDebugLevel()
 {
@@ -2510,5 +2531,287 @@ void GPTickShipDuelTest(UWorld* World, float DeltaTime)
 			&& GShipDuelTest.bBFired
 			&& GShipDuelTest.bBothExploded;
 		FinishShipDuelTest(bPass, bPass ? TEXT("ok") : TEXT("ships did not both explode"));
+	}
+}
+
+namespace
+{
+	struct FGPShipMoveProbe
+	{
+		bool bActive = false;
+		bool bLoggedStart = false;
+		bool bAppliedDirect = false;
+		bool bMeasuredDirect = false;
+		bool bAppliedPilot = false;
+		float Elapsed = 0.0f;
+		TWeakObjectPtr<UWorld> World;
+		TArray<TWeakObjectPtr<AWalkableShip>> Ships;
+		TArray<FVector> StartLocations;
+		TArray<FRotator> StartRotations;
+		TArray<float> DistAtDirect;
+		TArray<float> YawAtDirect;
+		TArray<float> DistAtPilot;
+		TArray<float> YawAtPilot;
+	};
+
+	FGPShipMoveProbe GShipMoveProbe;
+
+	void LogShipMoveSnapshot(const TCHAR* Tag, AWalkableShip* Ship)
+	{
+		if (!Ship)
+		{
+			return;
+		}
+
+		UShipMovementComponent* Move = Ship->ShipMovement;
+		UPrimitiveComponent* RootPrim = Cast<UPrimitiveComponent>(Ship->GetRootComponent());
+		UE_LOG(LogGalacticPirates, Warning,
+			TEXT("[ShipMoveProbe] %s ship=%s auth=%d wreck=%d net=%d loc=%s rot=%s lin=%.1f ang=%.1f thrust=%s rotIn=%s heldT=%s heldR=%s override=%d tickOn=%d mass=%.0f sim=%d gravity=%d collide=%d orbitOn=%d crewOn=%d helmOcc=%d currentPilot=%s"),
+			Tag,
+			*Ship->GetName(),
+			Ship->HasAuthority() ? 1 : 0,
+			Ship->IsWrecked() ? 1 : 0,
+			static_cast<int32>(Ship->GetNetMode()),
+			*Ship->GetActorLocation().ToCompactString(),
+			*Ship->GetActorRotation().ToCompactString(),
+			Move ? Move->GetLinearVelocity().Size() : -1.0f,
+			Move ? Move->GetAngularVelocity().Size() : -1.0f,
+			Move ? *Move->GetAppliedThrustInput().ToCompactString() : TEXT("none"),
+			Move ? *Move->GetAppliedRotationInput().ToCompactString() : TEXT("none"),
+			Move ? *Move->GetThrustInput().ToCompactString() : TEXT("none"),
+			Move ? *Move->GetRotationInput().ToCompactString() : TEXT("none"),
+			(Move && Move->IsVelocityOverride()) ? 1 : 0,
+			(Move && Move->PrimaryComponentTick.IsTickFunctionEnabled()) ? 1 : 0,
+			Move ? Move->ShipMass : -1.0f,
+			RootPrim && RootPrim->IsSimulatingPhysics() ? 1 : 0,
+			RootPrim && RootPrim->IsGravityEnabled() ? 1 : 0,
+			RootPrim ? static_cast<int32>(RootPrim->GetCollisionEnabled()) : -1,
+			(Ship->OrbitAI && Ship->OrbitAI->bEnabled) ? 1 : 0,
+			(Ship->CrewAI && Ship->CrewAI->bEnabled) ? 1 : 0,
+			(Ship->Helm && Ship->Helm->IsOccupied()) ? 1 : 0,
+			*GetNameSafe(Ship->GetCurrentPilot()));
+	}
+}
+
+void GPStartShipMoveProbe(UWorld* World)
+{
+	GShipMoveProbe = FGPShipMoveProbe();
+	if (!World)
+	{
+		UE_LOG(LogGalacticPirates, Error, TEXT("[ShipMoveProbe] FAIL no world"));
+		return;
+	}
+
+	CVarGPShipMoveLog->Set(1, ECVF_SetByConsole);
+	if (World->GetNetMode() == NM_Client)
+	{
+		UE_LOG(LogGalacticPirates, Warning,
+			TEXT("[ShipMoveProbe] running on CLIENT world — ship physics is server-authoritative. Also run gp.StartShipMoveProbe on the dedicated/PIE server console."));
+	}
+	for (TActorIterator<AWalkableShip> It(World); It; ++It)
+	{
+		AWalkableShip* Ship = *It;
+		if (!IsValid(Ship) || Ship->IsWrecked())
+		{
+			continue;
+		}
+		GShipMoveProbe.Ships.Add(Ship);
+		GShipMoveProbe.StartLocations.Add(Ship->GetActorLocation());
+		GShipMoveProbe.StartRotations.Add(Ship->GetActorRotation());
+		GShipMoveProbe.DistAtDirect.Add(0.0f);
+		GShipMoveProbe.YawAtDirect.Add(0.0f);
+		GShipMoveProbe.DistAtPilot.Add(0.0f);
+		GShipMoveProbe.YawAtPilot.Add(0.0f);
+		LogShipMoveSnapshot(TEXT("START"), Ship);
+	}
+
+	if (GShipMoveProbe.Ships.Num() == 0)
+	{
+		UE_LOG(LogGalacticPirates, Error, TEXT("[ShipMoveProbe] FAIL no live ships in world"));
+		return;
+	}
+
+	GShipMoveProbe.bActive = true;
+	GShipMoveProbe.Elapsed = 0.0f;
+	GShipMoveProbe.World = World;
+	UE_LOG(LogGalacticPirates, Warning,
+		TEXT("[ShipMoveProbe] started ships=%d net=%d — 0.2s snapshot, 1.2s direct SetThrust/SetRotation, 1.2s ApplyPilotInput, then PASS/FAIL"),
+		GShipMoveProbe.Ships.Num(),
+		static_cast<int32>(World->GetNetMode()));
+}
+
+void GPTickShipMoveProbe(UWorld* World, float DeltaTime)
+{
+	if (!World)
+	{
+		return;
+	}
+
+	if (!GShipMoveProbe.bActive && CVarGPShipMoveProbe.GetValueOnGameThread() > 0 && World->GetNetMode() != NM_Client)
+	{
+		CVarGPShipMoveProbe->Set(0, ECVF_SetByConsole);
+		GPStartShipMoveProbe(World);
+	}
+
+	if (!GShipMoveProbe.bActive || GShipMoveProbe.World.Get() != World)
+	{
+		return;
+	}
+
+	static uint64 LastFrame = 0;
+	if (GFrameCounter == LastFrame)
+	{
+		return;
+	}
+	LastFrame = GFrameCounter;
+
+	GShipMoveProbe.Elapsed += DeltaTime;
+	const float T = GShipMoveProbe.Elapsed;
+
+	if (!GShipMoveProbe.bLoggedStart && T >= 0.2f)
+	{
+		GShipMoveProbe.bLoggedStart = true;
+		for (int32 i = 0; i < GShipMoveProbe.Ships.Num(); ++i)
+		{
+			LogShipMoveSnapshot(TEXT("PRE"), GShipMoveProbe.Ships[i].Get());
+		}
+	}
+
+	if (!GShipMoveProbe.bAppliedDirect && T >= 0.25f)
+	{
+		GShipMoveProbe.bAppliedDirect = true;
+		for (int32 i = 0; i < GShipMoveProbe.Ships.Num(); ++i)
+		{
+			AWalkableShip* Ship = GShipMoveProbe.Ships[i].Get();
+			if (!IsValid(Ship) || !Ship->ShipMovement)
+			{
+				continue;
+			}
+			if (Ship->OrbitAI)
+			{
+				Ship->OrbitAI->bEnabled = false;
+			}
+			if (Ship->CrewAI)
+			{
+				Ship->CrewAI->bEnabled = false;
+			}
+			Ship->ShipMovement->SetVelocityOverride(FVector::ZeroVector, FVector::ZeroVector, false);
+			Ship->ShipMovement->SetThrustInput(FVector(1.0f, 0.0f, 0.0f));
+			Ship->ShipMovement->SetRotationInput(FVector(0.0f, 0.0f, 1.0f));
+			LogShipMoveSnapshot(TEXT("DIRECT_SET"), Ship);
+		}
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipMoveProbe] applied direct SetThrust(1,0,0) SetRotation yaw=1 on all ships (orbit/crew AI off, override cleared)"));
+	}
+
+	if (!GShipMoveProbe.bMeasuredDirect && T >= 1.45f)
+	{
+		for (int32 i = 0; i < GShipMoveProbe.Ships.Num(); ++i)
+		{
+			AWalkableShip* Ship = GShipMoveProbe.Ships[i].Get();
+			if (!IsValid(Ship))
+			{
+				continue;
+			}
+			GShipMoveProbe.DistAtDirect[i] = FVector::Dist(Ship->GetActorLocation(), GShipMoveProbe.StartLocations[i]);
+			GShipMoveProbe.YawAtDirect[i] = FMath::Abs(FMath::FindDeltaAngleDegrees(
+				GShipMoveProbe.StartRotations[i].Yaw, Ship->GetActorRotation().Yaw));
+			LogShipMoveSnapshot(TEXT("AFTER_DIRECT"), Ship);
+			UE_LOG(LogGalacticPirates, Warning,
+				TEXT("[ShipMoveProbe] after-direct %s dist=%.1f yawDelta=%.1f"),
+				*Ship->GetName(),
+				GShipMoveProbe.DistAtDirect[i],
+				GShipMoveProbe.YawAtDirect[i]);
+		}
+		GShipMoveProbe.bMeasuredDirect = true;
+	}
+
+	if (!GShipMoveProbe.bAppliedPilot && T >= 1.55f)
+	{
+		GShipMoveProbe.bAppliedPilot = true;
+		APlayerController* PC = World->GetFirstPlayerController();
+		AGalacticPiratesCharacter* Player = PC ? Cast<AGalacticPiratesCharacter>(PC->GetPawn()) : nullptr;
+		for (int32 i = 0; i < GShipMoveProbe.Ships.Num(); ++i)
+		{
+			AWalkableShip* Ship = GShipMoveProbe.Ships[i].Get();
+			if (!IsValid(Ship) || !Ship->ShipMovement)
+			{
+				continue;
+			}
+			Ship->ShipMovement->SetThrustInput(FVector::ZeroVector);
+			Ship->ShipMovement->SetRotationInput(FVector::ZeroVector);
+			Ship->ShipMovement->SetLinearVelocity(FVector::ZeroVector);
+			Ship->ShipMovement->SetAngularVelocity(FVector::ZeroVector);
+			GShipMoveProbe.StartLocations[i] = Ship->GetActorLocation();
+			GShipMoveProbe.StartRotations[i] = Ship->GetActorRotation();
+
+			if (Player && Ship->HasAuthority())
+			{
+				if (!Ship->GetCurrentPilot() && Ship->Helm)
+				{
+					Ship->Helm->TryInteract(Player);
+				}
+				Ship->ApplyPilotInput(Player, FVector(1.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, 1.0f));
+			}
+			LogShipMoveSnapshot(TEXT("PILOT_SET"), Ship);
+		}
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipMoveProbe] applied ApplyPilotInput thrust+yaw (or skipped if no authority/player)"));
+	}
+
+	if (T >= 2.75f)
+	{
+		bool bDirectMoved = false;
+		bool bDirectTurned = false;
+		bool bPilotMoved = false;
+		bool bPilotTurned = false;
+		for (int32 i = 0; i < GShipMoveProbe.Ships.Num(); ++i)
+		{
+			AWalkableShip* Ship = GShipMoveProbe.Ships[i].Get();
+			if (!IsValid(Ship))
+			{
+				continue;
+			}
+			GShipMoveProbe.DistAtPilot[i] = FVector::Dist(Ship->GetActorLocation(), GShipMoveProbe.StartLocations[i]);
+			GShipMoveProbe.YawAtPilot[i] = FMath::Abs(FMath::FindDeltaAngleDegrees(
+				GShipMoveProbe.StartRotations[i].Yaw, Ship->GetActorRotation().Yaw));
+			LogShipMoveSnapshot(TEXT("AFTER_PILOT"), Ship);
+			UE_LOG(LogGalacticPirates, Warning,
+				TEXT("[ShipMoveProbe] after-pilot %s dist=%.1f yawDelta=%.1f (direct dist=%.1f yaw=%.1f)"),
+				*Ship->GetName(),
+				GShipMoveProbe.DistAtPilot[i],
+				GShipMoveProbe.YawAtPilot[i],
+				GShipMoveProbe.DistAtDirect[i],
+				GShipMoveProbe.YawAtDirect[i]);
+			bDirectMoved |= GShipMoveProbe.DistAtDirect[i] > 50.0f;
+			bDirectTurned |= GShipMoveProbe.YawAtDirect[i] > 5.0f;
+			bPilotMoved |= GShipMoveProbe.DistAtPilot[i] > 50.0f;
+			bPilotTurned |= GShipMoveProbe.YawAtPilot[i] > 5.0f;
+		}
+
+		const bool bPass = bDirectMoved && bDirectTurned;
+		UE_LOG(LogGalacticPirates, Warning,
+			TEXT("[ShipMoveProbe] %s directMove=%d directTurn=%d pilotMove=%d pilotTurn=%d (PASS if physics responds to SetThrust/SetRotation)"),
+			bPass ? TEXT("PASS") : TEXT("FAIL"),
+			bDirectMoved ? 1 : 0,
+			bDirectTurned ? 1 : 0,
+			bPilotMoved ? 1 : 0,
+			bPilotTurned ? 1 : 0);
+
+		if (!bDirectMoved && !bDirectTurned)
+		{
+			UE_LOG(LogGalacticPirates, Error,
+				TEXT("[ShipMoveProbe] diagnosis: movement component is not integrating (tick off, wrecked, override, no authority, or physics blocked)"));
+		}
+		else if (bDirectMoved && !bPilotMoved)
+		{
+			UE_LOG(LogGalacticPirates, Error,
+				TEXT("[ShipMoveProbe] diagnosis: physics works; ApplyPilotInput is rejected (pilot mismatch / client / wrecked)"));
+		}
+
+		GShipMoveProbe.bActive = false;
+		CVarGPShipMoveLog->Set(0, ECVF_SetByConsole);
+		if (FParse::Param(FCommandLine::Get(), TEXT("AutoQuitAfterProbe")))
+		{
+			FPlatformMisc::RequestExit(false);
+		}
 	}
 }

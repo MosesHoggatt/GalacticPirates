@@ -5,6 +5,9 @@
 #include "HoloMapTypes.h"
 #include "ShipPolish.h"
 #include "GalacticPirates.h"
+#include "SpaceCraft.h"
+#include "HullHealthComponent.h"
+#include "CraftReplication.h"
 #include "Net/UnrealNetwork.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -14,6 +17,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "UObject/ConstructorHelpers.h"
+#include "ShipPulseBeamVisual.h"
 
 float GPComputeMissileHeatScore(const FVector& Origin, const FVector& Forward, const FVector& TargetLocation, float TargetHeat, float MinDot)
 {
@@ -37,11 +41,7 @@ float GPComputeMissileHeatScore(const FVector& Origin, const FVector& Forward, c
 AHeatseekingMissile::AHeatseekingMissile()
 {
 	PrimaryActorTick.bCanEverTick = true;
-	bReplicates = true;
-	SetReplicateMovement(true);
-	SetNetUpdateFrequency(60.0f);
-	SetMinNetUpdateFrequency(20.0f);
-	bAlwaysRelevant = true;
+	GPCraftNet::Apply(this, GPCraftNet::Missile());
 
 	MissileMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MissileMesh"));
 	SetRootComponent(MissileMesh);
@@ -79,10 +79,14 @@ AHeatseekingMissile::AHeatseekingMissile()
 	HoloPoi->MarkerScale = FVector(0.04f, 0.04f, 0.04f);
 	HoloPoi->bVisibleOnMaps = true;
 
+	HullHealth = CreateDefaultSubobject<UHullHealthComponent>(TEXT("HullHealth"));
+	HullHealth->MaxHealth = MissileHealth;
+	HullHealth->ArmorClass = EShipArmorClass::Unarmored;
+
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));
 	ProjectileMovement->UpdatedComponent = MissileMesh;
-	ProjectileMovement->InitialSpeed = 4200.0f;
-	ProjectileMovement->MaxSpeed = 7200.0f;
+	ProjectileMovement->InitialSpeed = 5040.0f;
+	ProjectileMovement->MaxSpeed = 8640.0f;
 	ProjectileMovement->bRotationFollowsVelocity = true;
 	ProjectileMovement->ProjectileGravityScale = 0.0f;
 	ProjectileMovement->bIsHomingProjectile = true;
@@ -93,7 +97,7 @@ AHeatseekingMissile::AHeatseekingMissile()
 void AHeatseekingMissile::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-	DOREPLIFETIME(AHeatseekingMissile, SourceShip);
+	DOREPLIFETIME(AHeatseekingMissile, SourceActor);
 	DOREPLIFETIME(AHeatseekingMissile, LockedTarget);
 }
 
@@ -102,28 +106,42 @@ void AHeatseekingMissile::BeginPlay()
 	Super::BeginPlay();
 	GPApplyPolishVfxMaterial(MissileMesh, TEXT("circle_05"), FLinearColor(1.0f, 0.28f, 0.06f, 1.0f));
 	IgnoreSourceCollision();
+	FuseElapsed = 0.0f;
+	if (HullHealth)
+	{
+		HullHealth->MaxHealth = MissileHealth;
+		HullHealth->OnHullDestroyed.AddDynamic(this, &AHeatseekingMissile::HandleHullDestroyed);
+		if (HasAuthority())
+		{
+			HullHealth->ResetToFull();
+		}
+	}
 	if (HasAuthority())
 	{
-		RemainingHealth = MissileHealth;
-		SetLifeSpan(FuseSeconds);
+		SetLifeSpan(0.0f);
 	}
 }
 
-void AHeatseekingMissile::InitializeMissile(AWalkableShip* InSourceShip, AWalkableShip* InTarget, APawn* InInstigator, float InDamage, float Speed)
+void AHeatseekingMissile::InitializeMissile(AActor* InSource, AActor* InTarget, APawn* InInstigator, float InDamage, float Speed, const FVector& InheritedVelocity)
 {
-	SourceShip = InSourceShip;
+	SourceActor = InSource;
 	InstigatorPawn = InInstigator;
 	SetInstigator(InInstigator);
-	SetOwner(InSourceShip);
+	SetOwner(InSource ? InSource : InInstigator);
 	Damage = InDamage;
-	RemainingHealth = MissileHealth;
+	if (HullHealth)
+	{
+		HullHealth->MaxHealth = MissileHealth;
+		HullHealth->ResetToFull();
+	}
 	IgnoreSourceCollision();
 
 	if (ProjectileMovement)
 	{
-		ProjectileMovement->InitialSpeed = Speed;
-		ProjectileMovement->MaxSpeed = FMath::Max(Speed, ProjectileMovement->MaxSpeed);
-		ProjectileMovement->Velocity = GetActorForwardVector() * Speed;
+		const FVector LaunchVelocity = GetActorForwardVector() * Speed + InheritedVelocity;
+		ProjectileMovement->InitialSpeed = LaunchVelocity.Size();
+		ProjectileMovement->MaxSpeed = FMath::Max(LaunchVelocity.Size() * 1.5f, 8640.0f);
+		ProjectileMovement->Velocity = LaunchVelocity;
 		ProjectileMovement->HomingAccelerationMagnitude = HomingAcceleration;
 	}
 
@@ -142,22 +160,48 @@ void AHeatseekingMissile::InitializeMissile(AWalkableShip* InSourceShip, AWalkab
 
 void AHeatseekingMissile::IgnoreSourceCollision()
 {
-	if (!SourceShip || !MissileMesh)
+	if (!MissileMesh)
 	{
 		return;
 	}
 
-	MissileMesh->IgnoreActorWhenMoving(SourceShip, true);
-	for (AGalacticPiratesCharacter* Aboard : SourceShip->GetPlayersAboard())
+	if (AWalkableShip* SourceShip = Cast<AWalkableShip>(SourceActor))
 	{
-		if (Aboard)
+		MissileMesh->IgnoreActorWhenMoving(SourceShip, true);
+		for (AGalacticPiratesCharacter* Aboard : SourceShip->GetPlayersAboard())
 		{
-			MissileMesh->IgnoreActorWhenMoving(Aboard, true);
+			if (Aboard)
+			{
+				MissileMesh->IgnoreActorWhenMoving(Aboard, true);
+			}
 		}
+	}
+	else if (SourceActor)
+	{
+		MissileMesh->IgnoreActorWhenMoving(SourceActor, true);
+	}
+
+	if (AActor* SourceOwner = GetOwner())
+	{
+		MissileMesh->IgnoreActorWhenMoving(SourceOwner, true);
+	}
+	if (InstigatorPawn)
+	{
+		MissileMesh->IgnoreActorWhenMoving(InstigatorPawn, true);
 	}
 }
 
-AWalkableShip* AHeatseekingMissile::FindHottestTarget() const
+AWalkableShip* AHeatseekingMissile::GetLockedTarget() const
+{
+	return Cast<AWalkableShip>(LockedTarget);
+}
+
+AWalkableShip* AHeatseekingMissile::GetSourceShip() const
+{
+	return Cast<AWalkableShip>(SourceActor);
+}
+
+AActor* AHeatseekingMissile::FindHottestTarget() const
 {
 	UWorld* World = GetWorld();
 	if (!World)
@@ -165,34 +209,40 @@ AWalkableShip* AHeatseekingMissile::FindHottestTarget() const
 		return nullptr;
 	}
 
-	AWalkableShip* Best = nullptr;
+	AActor* Best = nullptr;
 	float BestScore = 0.0f;
 	const FVector Origin = GetActorLocation();
 	const FVector Forward = GetActorForwardVector();
 
-	for (TActorIterator<AWalkableShip> It(World); It; ++It)
+	for (TActorIterator<APawn> It(World); It; ++It)
 	{
-		AWalkableShip* Ship = *It;
-		if (!Ship || Ship == SourceShip || Ship->IsWrecked())
+		APawn* Pawn = *It;
+		ISpaceCraft* Craft = GPAsSpaceCraft(Pawn);
+		if (!Pawn || Pawn == SourceActor || !Craft || Craft->IsCraftWrecked())
 		{
 			continue;
 		}
 
-		if (UHoloMapPoiComponent* Poi = Ship->HoloPoi)
+		if (SourceActor && !GPAreHostile(SourceActor, Pawn))
 		{
-			if (!Poi->IsHostileTo(SourceShip))
+			continue;
+		}
+		if (ISpaceCraft* SourceCraft = GPAsSpaceCraft(SourceActor))
+		{
+			if (SourceCraft->GetHomeCraft() == Pawn)
 			{
 				continue;
 			}
 		}
 
-		const float SpeedCm = Ship->GetPointVelocity(Ship->GetActorLocation()).Size();
-		const float Heat = Ship->GetHealth() + SpeedCm * 0.15f + 200.0f;
-		const float Score = GPComputeMissileHeatScore(Origin, Forward, Ship->GetActorLocation(), Heat, HeatSeekMinDot);
+		const float Health = Craft->GetHullHealth() ? Craft->GetHullHealth()->GetHealth() : 0.0f;
+		const float SpeedCm = Craft->GetCraftVelocity().Size();
+		const float Heat = Health + SpeedCm * 0.15f + 200.0f;
+		const float Score = GPComputeMissileHeatScore(Origin, Forward, Pawn->GetActorLocation(), Heat, HeatSeekMinDot);
 		if (Score > BestScore)
 		{
 			BestScore = Score;
-			Best = Ship;
+			Best = Pawn;
 		}
 	}
 
@@ -206,12 +256,12 @@ void AHeatseekingMissile::AcquireOrRefreshTarget()
 		return;
 	}
 
-	if (LockedTarget && (LockedTarget->IsWrecked() || !IsValid(LockedTarget)))
+	if (LockedTarget && (!IsValid(LockedTarget) || GPIsCraftWrecked(LockedTarget)))
 	{
 		LockedTarget = nullptr;
 	}
 
-	AWalkableShip* Hottest = FindHottestTarget();
+	AActor* Hottest = FindHottestTarget();
 	if (!Hottest)
 	{
 		return;
@@ -224,12 +274,19 @@ void AHeatseekingMissile::AcquireOrRefreshTarget()
 		return;
 	}
 
+	auto HeatOf = [](AActor* Actor) -> float
+	{
+		if (ISpaceCraft* Craft = GPAsSpaceCraft(Actor))
+		{
+			return Craft->GetHullHealth() ? Craft->GetHullHealth()->GetHealth() + 200.0f : 200.0f;
+		}
+		return 200.0f;
+	};
+
 	const FVector Origin = GetActorLocation();
 	const FVector Forward = GetActorForwardVector();
-	const float LockedHeat = LockedTarget->GetHealth() + 200.0f;
-	const float NewHeat = Hottest->GetHealth() + 200.0f;
-	const float LockedScore = GPComputeMissileHeatScore(Origin, Forward, LockedTarget->GetActorLocation(), LockedHeat, HeatSeekMinDot * 0.5f);
-	const float NewScore = GPComputeMissileHeatScore(Origin, Forward, Hottest->GetActorLocation(), NewHeat, HeatSeekMinDot);
+	const float LockedScore = GPComputeMissileHeatScore(Origin, Forward, LockedTarget->GetActorLocation(), HeatOf(LockedTarget), HeatSeekMinDot * 0.5f);
+	const float NewScore = GPComputeMissileHeatScore(Origin, Forward, Hottest->GetActorLocation(), HeatOf(Hottest), HeatSeekMinDot);
 	if (NewScore > LockedScore * 1.35f)
 	{
 		LockedTarget = Hottest;
@@ -244,10 +301,18 @@ void AHeatseekingMissile::ApplyHoming()
 		return;
 	}
 
-	ProjectileMovement->bIsHomingProjectile = LockedTarget != nullptr;
-	ProjectileMovement->HomingTargetComponent = LockedTarget && LockedTarget->CombatHull
-		? static_cast<USceneComponent*>(LockedTarget->CombatHull)
-		: (LockedTarget ? LockedTarget->GetRootComponent() : nullptr);
+	USceneComponent* HomingComp = nullptr;
+	if (ISpaceCraft* Craft = GPAsSpaceCraft(LockedTarget))
+	{
+		HomingComp = Craft->GetHomingSceneComponent();
+	}
+	else if (LockedTarget)
+	{
+		HomingComp = LockedTarget->GetRootComponent();
+	}
+
+	ProjectileMovement->bIsHomingProjectile = HomingComp != nullptr;
+	ProjectileMovement->HomingTargetComponent = HomingComp;
 	ProjectileMovement->HomingAccelerationMagnitude = HomingAcceleration;
 }
 
@@ -265,6 +330,13 @@ void AHeatseekingMissile::Tick(float DeltaTime)
 	}
 
 	RetargetTimer += DeltaTime;
+	FuseElapsed += DeltaTime;
+	if (FuseElapsed >= FuseSeconds)
+	{
+		Detonate(nullptr);
+		return;
+	}
+
 	if (RetargetTimer >= RetargetInterval)
 	{
 		RetargetTimer = 0.0f;
@@ -276,29 +348,95 @@ void AHeatseekingMissile::Tick(float DeltaTime)
 void AHeatseekingMissile::NotifyActorBeginOverlap(AActor* OtherActor)
 {
 	Super::NotifyActorBeginOverlap(OtherActor);
-	AWalkableShip* Ship = Cast<AWalkableShip>(OtherActor);
-	if (Ship && Ship != SourceShip)
+	if (!HasAuthority())
 	{
-		Detonate(Ship);
+		return;
+	}
+	AActor* Other = OtherActor;
+	if (!Other || Other == SourceActor || GPIsCraftWrecked(Other))
+	{
+		return;
+	}
+	if (GPAsSpaceCraft(Other) || Cast<AWalkableShip>(Other))
+	{
+		Detonate(Other);
 	}
 }
 
 void AHeatseekingMissile::NotifyHit(UPrimitiveComponent* MyComp, AActor* Other, UPrimitiveComponent* OtherComp, bool bSelfMoved, FVector HitLocation, FVector HitNormal, FVector NormalImpulse, const FHitResult& Hit)
 {
 	Super::NotifyHit(MyComp, Other, OtherComp, bSelfMoved, HitLocation, HitNormal, NormalImpulse, Hit);
-	AWalkableShip* Ship = Cast<AWalkableShip>(Other);
-	if (!Ship && OtherComp)
-	{
-		Ship = Cast<AWalkableShip>(OtherComp->GetOwner());
-	}
-	if (Ship == SourceShip)
+	if (!HasAuthority())
 	{
 		return;
 	}
-	Detonate(Ship);
+	AActor* HitActor = Other;
+	if (!HitActor && OtherComp)
+	{
+		HitActor = OtherComp->GetOwner();
+	}
+	if (HitActor == SourceActor)
+	{
+		return;
+	}
+	Detonate(GPAsSpaceCraft(HitActor) ? HitActor : nullptr);
 }
 
-void AHeatseekingMissile::Detonate(AWalkableShip* HitShip)
+void AHeatseekingMissile::PlayDetonationFx(const FVector& Location, bool bShipHit)
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+
+	if (MissileMesh)
+	{
+		MissileMesh->SetVisibility(false, true);
+		MissileMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+	if (ExhaustLight)
+	{
+		ExhaustLight->SetIntensity(0.0f);
+	}
+
+	const float BlastScale = bShipHit ? 380.0f : 160.0f;
+	const float BlastDuration = bShipHit ? 1.05f : 0.55f;
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	if (AShipPulseBeamVisual* Burst = World->SpawnActor<AShipPulseBeamVisual>(AShipPulseBeamVisual::StaticClass(), Location, FRotator::ZeroRotator, Params))
+	{
+		const FLinearColor Color = bShipHit
+			? FLinearColor(1.0f, 0.32f, 0.06f, 1.0f)
+			: FLinearColor(1.0f, 0.62f, 0.18f, 1.0f);
+		Burst->InitializeExplosion(Location, BlastScale, BlastDuration, Color);
+	}
+
+	if (bShipHit)
+	{
+		GPPlayPolishSoundAt(this, TEXT("SFX_ExplosionHit"), Location, 1.05f);
+		GPPlayPolishSoundAt(this, TEXT("SFX_ExplosionBass"), Location, 0.7f);
+		GPPlayPolishSoundAt(this, TEXT("SFX_Impact"), Location, 0.85f);
+		GPPlayExplosionCameraShake(World, Location, 180.0f, 3200.0f, 0.55f);
+	}
+	else
+	{
+		GPPlayPolishSoundAt(this, TEXT("SFX_ExplosionFizzle"), Location, 0.32f);
+		GPPlayExplosionCameraShake(World, Location, 80.0f, 1600.0f, 0.18f);
+	}
+}
+
+void AHeatseekingMissile::Multicast_DetonateFx_Implementation(FVector_NetQuantize Location, bool bShipHit)
+{
+	PlayDetonationFx(Location, bShipHit);
+}
+
+void AHeatseekingMissile::HandleHullDestroyed()
+{
+	Detonate(nullptr);
+}
+
+void AHeatseekingMissile::Detonate(AActor* HitActor)
 {
 	if (bDetonated)
 	{
@@ -306,22 +444,35 @@ void AHeatseekingMissile::Detonate(AWalkableShip* HitShip)
 	}
 	bDetonated = true;
 
-	if (HasAuthority() && HitShip && HitShip != SourceShip)
+	const FVector Location = GetActorLocation();
+	const bool bShipHit = HitActor && HitActor != SourceActor && GPAsSpaceCraft(HitActor);
+	if (HasAuthority() && bShipHit)
 	{
-		HitShip->ApplyShipDamage(Damage, Cast<AGalacticPiratesCharacter>(InstigatorPawn), this);
+		FSpaceDamageEvent Event;
+		Event.Amount = Damage;
+		Event.Kind = ESpaceDamageKind::Missile;
+		Event.InstigatorPawn = InstigatorPawn;
+		Event.Causer = this;
+		GPApplySpaceDamage(HitActor, Event);
 	}
 
-	if (GetNetMode() != NM_DedicatedServer)
+	if (HasAuthority())
 	{
-		GPPlayPolishSoundAt(this, TEXT("SFX_Impact"), GetActorLocation(), 1.1f);
-		GPPlayExplosionCameraShake(GetWorld(), GetActorLocation(), 180.0f, 3500.0f, 0.45f);
+		Multicast_DetonateFx(Location, bShipHit);
+	}
+	else
+	{
+		PlayDetonationFx(Location, bShipHit);
 	}
 
-	UE_LOG(LogGalacticPirates, Warning, TEXT("[Missile] Detonate hit=%s src=%s dmg=%.1f net=%d"),
-		*GetNameSafe(HitShip),
-		*GetNameSafe(SourceShip),
-		Damage,
-		static_cast<int32>(GetNetMode()));
+	if (GPCombatLogEnabled())
+	{
+		UE_LOG(LogGalacticPirates, Log, TEXT("[Missile] Detonate hit=%s src=%s dmg=%.1f net=%d"),
+			*GetNameSafe(HitActor),
+			*GetNameSafe(SourceActor),
+			Damage,
+			static_cast<int32>(GetNetMode()));
+	}
 
 	Destroy();
 }
@@ -334,11 +485,28 @@ bool AHeatseekingMissile::ApplyMinigunHit(float InDamage, APawn* InInstigator)
 	}
 
 	InstigatorPawn = InInstigator;
-	RemainingHealth -= InDamage;
-	if (RemainingHealth <= 0.0f)
+	UHullHealthComponent* Hull = HullHealth ? HullHealth.Get() : GPFindHullHealth(this);
+	if (Hull)
+	{
+		Hull->MaxHealth = MissileHealth;
+		Hull->ArmorClass = EShipArmorClass::Unarmored;
+		if (Hull->GetHealth() > MissileHealth)
+		{
+			Hull->SetHealth(MissileHealth);
+		}
+
+		FSpaceDamageEvent Event;
+		Event.Amount = InDamage;
+		Event.Kind = ESpaceDamageKind::Ballistic;
+		Event.InstigatorPawn = InInstigator;
+		Event.Causer = InInstigator;
+		Hull->ApplyDamage(Event);
+	}
+
+	if (!Hull || Hull->IsDestroyed() || (Hull && Hull->GetHealth() <= 0.0f))
 	{
 		Detonate(nullptr);
-		return true;
 	}
-	return true;
+
+	return bDetonated || !IsValid(this);
 }

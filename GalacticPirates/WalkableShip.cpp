@@ -15,9 +15,15 @@
 #include "GalacticPiratesCharacter.h"
 #include "ShipDebug.h"
 #include "GalacticPirates.h"
+#include "HullHealthComponent.h"
+#include "WeaponHardpointComponent.h"
+#include "CraftReplication.h"
+#include "OccupancyComponent.h"
+#include "CraftWreck.h"
 #include "Net/UnrealNetwork.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
+#include "Components/PointLightComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "CollisionQueryParams.h"
@@ -32,9 +38,9 @@
 AWalkableShip::AWalkableShip()
 {
 	PrimaryActorTick.bCanEverTick = true;
-	bReplicates = true;
-	SetReplicateMovement(true);
-	bAlwaysRelevant = true;
+	PrimaryActorTick.bStartWithTickEnabled = true;
+	PrimaryActorTick.bAllowTickOnDedicatedServer = true;
+	GPCraftNet::Apply(this, GPCraftNet::CapitalShip());
 
 	ShipRoot = CreateDefaultSubobject<USceneComponent>(TEXT("ShipRoot"));
 	RootComponent = ShipRoot;
@@ -55,22 +61,36 @@ AWalkableShip::AWalkableShip()
 	SpawnPoint->SetRelativeLocation(FVector(0.0f, 0.0f, 100.0f));
 
 	ShipMovement = CreateDefaultSubobject<UShipMovementComponent>(TEXT("ShipMovement"));
+	HullHealth = CreateDefaultSubobject<UHullHealthComponent>(TEXT("HullHealth"));
+	HullHealth->MaxHealth = MaxHealth;
+	HullHealth->ArmorClass = ArmorClass;
 
 	Helm = CreateDefaultSubobject<UHelmComponent>(TEXT("Helm"));
 	Helm->SetupAttachment(ShipRoot);
 
+	HelmOccupancy = CreateDefaultSubobject<UOccupancyComponent>(TEXT("HelmOccupancy"));
+	HelmOccupancy->SetupAttachment(Helm);
+
+	PulseHardpoint = CreateDefaultSubobject<UWeaponHardpointComponent>(TEXT("PulseHardpoint"));
+	PulseHardpoint->SetupAttachment(ShipRoot);
+	PulseHardpoint->SetRelativeLocation(FVector(1600.0f, 0.0f, 180.0f));
+
 	PulseCannon = CreateDefaultSubobject<UShipPulseCannonComponent>(TEXT("PulseCannon"));
-	PulseCannon->SetupAttachment(ShipRoot);
-	PulseCannon->SetRelativeLocation(FVector(1600.0f, 0.0f, 180.0f));
+	PulseCannon->SetupAttachment(PulseHardpoint);
+	PulseHardpoint->EquippedWeapon = PulseCannon;
 
 	WeaponTerminal = CreateDefaultSubobject<UWeaponTerminalComponent>(TEXT("WeaponTerminal"));
 	WeaponTerminal->SetupAttachment(ShipRoot);
 	WeaponTerminal->SetRelativeLocation(FVector(-180.0f, 280.0f, 90.0f));
 
+	MissileHardpoint = CreateDefaultSubobject<UWeaponHardpointComponent>(TEXT("MissileHardpoint"));
+	MissileHardpoint->SetupAttachment(ShipRoot);
+	MissileHardpoint->SetRelativeLocation(FVector(1600.0f, -420.0f, 180.0f));
+	MissileHardpoint->SetRelativeRotation(FRotator(0.0f, -8.0f, 0.0f));
+
 	MissileSalvo = CreateDefaultSubobject<UShipMissileSalvoComponent>(TEXT("MissileSalvo"));
-	MissileSalvo->SetupAttachment(ShipRoot);
-	MissileSalvo->SetRelativeLocation(FVector(1600.0f, -420.0f, 180.0f));
-	MissileSalvo->SetRelativeRotation(FRotator(0.0f, -8.0f, 0.0f));
+	MissileSalvo->SetupAttachment(MissileHardpoint);
+	MissileHardpoint->EquippedWeapon = MissileSalvo;
 
 	MissileTerminal = CreateDefaultSubobject<UMissileSalvoTerminalComponent>(TEXT("MissileTerminal"));
 	MissileTerminal->SetupAttachment(ShipRoot);
@@ -119,15 +139,35 @@ AWalkableShip::AWalkableShip()
 	StarboardDoorFillLower = MakePodPiece(CubeMesh, TEXT("StarboardDoorFillLower"), FVector::OneVector, FVector::ZeroVector, true);
 	StarboardDoorFillUpper = MakePodPiece(CubeMesh, TEXT("StarboardDoorFillUpper"), FVector::OneVector, FVector::ZeroVector, true);
 
+	PortGunHardpoint = CreateDefaultSubobject<UWeaponHardpointComponent>(TEXT("PortGunHardpoint"));
+	PortGunHardpoint->SetupAttachment(ShipRoot);
+	PortGunHardpoint->SetRelativeLocation(FVector(PodDoorwayCenterX, -(PodCenterY + 40.0f), 96.0f));
+	PortGunHardpoint->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
+
 	PortMinigun = CreateDefaultSubobject<UMinigunPodComponent>(TEXT("PortMinigun"));
 	PortMinigun->SetupAttachment(ShipRoot);
 	PortMinigun->SetRelativeLocation(FVector(PodDoorwayCenterX, -(PodCenterY + 40.0f), 96.0f));
 	PortMinigun->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
+	PortGunHardpoint->EquippedWeapon = PortMinigun;
+
+	StarboardGunHardpoint = CreateDefaultSubobject<UWeaponHardpointComponent>(TEXT("StarboardGunHardpoint"));
+	StarboardGunHardpoint->SetupAttachment(ShipRoot);
+	StarboardGunHardpoint->SetRelativeLocation(FVector(PodDoorwayCenterX, PodCenterY + 40.0f, 96.0f));
+	StarboardGunHardpoint->SetRelativeRotation(FRotator(0.0f, 90.0f, 0.0f));
 
 	StarboardMinigun = CreateDefaultSubobject<UMinigunPodComponent>(TEXT("StarboardMinigun"));
 	StarboardMinigun->SetupAttachment(ShipRoot);
 	StarboardMinigun->SetRelativeLocation(FVector(PodDoorwayCenterX, PodCenterY + 40.0f, 96.0f));
 	StarboardMinigun->SetRelativeRotation(FRotator(0.0f, 90.0f, 0.0f));
+	StarboardGunHardpoint->EquippedWeapon = StarboardMinigun;
+
+	PortGunOccupancy = CreateDefaultSubobject<UOccupancyComponent>(TEXT("PortGunOccupancy"));
+	PortGunOccupancy->SetupAttachment(PortMinigun);
+	PortMinigun->Occupancy = PortGunOccupancy;
+
+	StarboardGunOccupancy = CreateDefaultSubobject<UOccupancyComponent>(TEXT("StarboardGunOccupancy"));
+	StarboardGunOccupancy->SetupAttachment(StarboardMinigun);
+	StarboardMinigun->Occupancy = StarboardGunOccupancy;
 
 	MapTable = CreateDefaultSubobject<UHolographicMapTableComponent>(TEXT("MapTable"));
 	MapTable->SetupAttachment(ShipRoot);
@@ -136,8 +176,11 @@ AWalkableShip::AWalkableShip()
 	HoloPoi = CreateDefaultSubobject<UHoloMapPoiComponent>(TEXT("HoloPoi"));
 	HoloPoi->SetupAttachment(ShipRoot);
 	HoloPoi->Kind = EHoloMapPoiKind::EnemyShip;
-	HoloPoi->Primitive = EHoloMapPrimitive::Cone;
+	HoloPoi->Primitive = EHoloMapPrimitive::Cube;
 	HoloPoi->bOverridePrimitive = true;
+	HoloPoi->MarkerScale = FVector(0.10f, 0.10f, 0.10f);
+	HoloPoi->OverrideMesh = nullptr;
+	HoloPoi->bVisibleOnMaps = true;
 
 	OrbitAI = CreateDefaultSubobject<UShipOrbitAiComponent>(TEXT("OrbitAI"));
 	CrewAI = CreateDefaultSubobject<UShipCrewAiComponent>(TEXT("CrewAI"));
@@ -153,9 +196,29 @@ AWalkableShip::AWalkableShip()
 	CombatHull->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	CombatHull->SetCanEverAffectNavigation(false);
 
+	auto MakeAlarmLight = [this](const TCHAR* Name, const FVector& RelLocation)
+	{
+		UPointLightComponent* Light = CreateDefaultSubobject<UPointLightComponent>(Name);
+		Light->SetupAttachment(ShipRoot);
+		Light->SetRelativeLocation(RelLocation);
+		Light->SetIntensity(0.0f);
+		Light->SetAttenuationRadius(1200.0f);
+		Light->SetSourceRadius(40.0f);
+		Light->SetLightColor(FLinearColor(1.0f, 0.04f, 0.02f));
+		Light->SetCastShadows(false);
+		Light->bUseInverseSquaredFalloff = false;
+		Light->SetVisibility(true);
+		Light->SetHiddenInGame(false);
+		return Light;
+	};
+	AlarmLightFore = MakeAlarmLight(TEXT("AlarmLightFore"), FVector(520.0f, 0.0f, 250.0f));
+	AlarmLightMid = MakeAlarmLight(TEXT("AlarmLightMid"), FVector(40.0f, 0.0f, 250.0f));
+	AlarmLightAft = MakeAlarmLight(TEXT("AlarmLightAft"), FVector(-480.0f, 0.0f, 250.0f));
+	AlarmLightPort = MakeAlarmLight(TEXT("AlarmLightPort"), FVector(PodDoorwayCenterX, -PodCenterY, 210.0f));
+	AlarmLightStarboard = MakeAlarmLight(TEXT("AlarmLightStarboard"), FVector(PodDoorwayCenterX, PodCenterY, 210.0f));
+
 	CurrentPilot = nullptr;
 	LastReplicatedRotation = FQuat::Identity;
-	CurrentHealth = MaxHealth;
 	SetCanBeDamaged(true);
 	SetNetUpdateFrequency(30.0f);
 	SetMinNetUpdateFrequency(10.0f);
@@ -165,10 +228,19 @@ void AWalkableShip::BeginPlay()
 {
 	Super::BeginPlay();
 	LastReplicatedRotation = GetActorQuat();
+	if (HullHealth)
+	{
+		HullHealth->OnHealthChanged.AddDynamic(this, &AWalkableShip::HandleHullHealthChanged);
+		HullHealth->OnHullDestroyed.AddDynamic(this, &AWalkableShip::HandleHullDestroyed);
+	}
 	if (HasAuthority())
 	{
-		CurrentHealth = MaxHealth;
 		bWrecked = false;
+		SyncHullFromAuthoring();
+		if (HullHealth)
+		{
+			HullHealth->ResetToFull();
+		}
 	}
 
 	if (InteriorMesh)
@@ -180,6 +252,11 @@ void AWalkableShip::BeginPlay()
 		}
 	}
 
+	if (HelmOccupancy)
+	{
+		HelmOccupancy->InteractRange = Helm ? Helm->InteractRange : HelmOccupancy->InteractRange;
+		HelmOccupancy->OnOccupancyChanged.AddDynamic(this, &AWalkableShip::HandleHelmOccupancy);
+	}
 	if (HasAuthority() && GetWorld() && GetWorld()->GetNetMode() == NM_DedicatedServer
 		&& GPDedicatedNetTestEnabled())
 	{
@@ -189,6 +266,8 @@ void AWalkableShip::BeginPlay()
 	CarveGunPodDoorways();
 	GPApplyPolishVfxMaterial(PortPodBubble, TEXT("circle_05"), FLinearColor(0.35f, 0.62f, 0.9f, 0.35f));
 	GPApplyPolishVfxMaterial(StarboardPodBubble, TEXT("circle_05"), FLinearColor(0.35f, 0.62f, 0.9f, 0.35f));
+	LastNotifiedHealth = GetHealth();
+	ApplyAlarmLightFlash(0.0f);
 }
 
 void AWalkableShip::Tick(float DeltaTime)
@@ -197,18 +276,25 @@ void AWalkableShip::Tick(float DeltaTime)
 
 	if (HasAuthority() && ShipMovement)
 	{
-		ReplicatedLinearVelocity = ShipMovement->GetLinearVelocity();
-		ReplicatedAngularVelocity = ShipMovement->GetAngularVelocity();
-	}
-
-	if (HasAuthority() && !bWrecked && CurrentHealth <= 0.0f)
-	{
-		Explode();
+		if (PlayersAboard.Num() > 0)
+		{
+			const FVector Linear = ShipMovement->GetLinearVelocity();
+			const FVector Angular = ShipMovement->GetAngularVelocity();
+			if (!Linear.Equals(ReplicatedLinearVelocity, 0.5f) || !Angular.Equals(ReplicatedAngularVelocity, 0.1f))
+			{
+				ReplicatedLinearVelocity = Linear;
+				ReplicatedAngularVelocity = Angular;
+			}
+		}
+		else if (!FVector(ReplicatedLinearVelocity).IsNearlyZero() || !FVector(ReplicatedAngularVelocity).IsNearlyZero())
+		{
+			ReplicatedLinearVelocity = FVector::ZeroVector;
+			ReplicatedAngularVelocity = FVector::ZeroVector;
+		}
 	}
 
 	BroadcastRotationChange();
-	GPTickDedicatedNetTest(GetWorld(), DeltaTime);
-	GPTickShipDuelTest(GetWorld(), DeltaTime);
+	TickInteriorAlarm(DeltaTime);
 }
 
 void AWalkableShip::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -222,11 +308,10 @@ void AWalkableShip::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AWalkableShip, CurrentPilot);
-	DOREPLIFETIME(AWalkableShip, PlayersAboard);
 	DOREPLIFETIME(AWalkableShip, ReplicatedLinearVelocity);
 	DOREPLIFETIME(AWalkableShip, ReplicatedAngularVelocity);
-	DOREPLIFETIME(AWalkableShip, CurrentHealth);
 	DOREPLIFETIME(AWalkableShip, bWrecked);
+	DOREPLIFETIME(AWalkableShip, AffiliationId);
 }
 
 AWalkableShip* AWalkableShip::FindPersistentShip(UWorld* World)
@@ -310,7 +395,10 @@ bool AWalkableShip::RequestPilotAssignment(AGalacticPiratesCharacter* Character)
 
 	if (Character->IsManningMinigun())
 	{
-		return false;
+		if (UMinigunPodComponent* Pod = Character->GetOccupiedMinigun())
+		{
+			Pod->ForceRelease();
+		}
 	}
 
 	if (CurrentPilot != nullptr)
@@ -318,13 +406,15 @@ bool AWalkableShip::RequestPilotAssignment(AGalacticPiratesCharacter* Character)
 		return false;
 	}
 
-	if (!PlayersAboard.Contains(Character))
-	{
-		return false;
-	}
+	RegisterPlayer(Character);
 
 	AGalacticPiratesCharacter* OldPilot = CurrentPilot;
 	CurrentPilot = Character;
+	if (ShipMovement)
+	{
+		ShipMovement->SetThrustInput(FVector::ZeroVector);
+		ShipMovement->SetRotationInput(FVector::ZeroVector);
+	}
 	OnRep_CurrentPilot(OldPilot);
 
 	return true;
@@ -345,6 +435,34 @@ void AWalkableShip::ReleasePilot(AGalacticPiratesCharacter* Character)
 	AGalacticPiratesCharacter* OldPilot = CurrentPilot;
 	CurrentPilot = nullptr;
 	OnRep_CurrentPilot(OldPilot);
+}
+
+void AWalkableShip::HandleHelmOccupancy(APawn* NewOccupant, APawn* OldOccupant)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	AGalacticPiratesCharacter* NewPilot = Cast<AGalacticPiratesCharacter>(NewOccupant);
+	AGalacticPiratesCharacter* OldPilot = Cast<AGalacticPiratesCharacter>(OldOccupant);
+	if (NewPilot)
+	{
+		if (CurrentPilot && CurrentPilot != NewPilot)
+		{
+			ReleasePilot(CurrentPilot);
+		}
+		if (CurrentPilot != NewPilot)
+		{
+			RequestPilotAssignment(NewPilot);
+		}
+		return;
+	}
+
+	if (OldPilot && CurrentPilot == OldPilot)
+	{
+		ReleasePilot(OldPilot);
+	}
 }
 
 void AWalkableShip::OnRep_CurrentPilot(AGalacticPiratesCharacter* OldPilot)
@@ -368,10 +486,31 @@ void AWalkableShip::OnRep_CurrentPilot(AGalacticPiratesCharacter* OldPilot)
 	{
 		Helm->OnPilotChanged(CurrentPilot, OldPilot);
 	}
+	if (HasAuthority() && HelmOccupancy)
+	{
+		APawn* Seat = HelmOccupancy->GetOccupant();
+		if (Seat != CurrentPilot && (!Seat || Seat == OldPilot))
+		{
+			HelmOccupancy->SetOccupant(CurrentPilot);
+		}
+	}
 }
 
 void AWalkableShip::ApplyPilotInput(AGalacticPiratesCharacter* Pilot, const FVector& ThrustInput, const FVector& RotationInput)
 {
+	if (GPShipMoveLogLevel() > 0)
+	{
+		UE_LOG(LogGalacticPirates, Warning,
+			TEXT("[ShipMove] ApplyPilotInput ship=%s auth=%d wrecked=%d pilot=%s current=%s thrust=%s rot=%s"),
+			*GetName(),
+			HasAuthority() ? 1 : 0,
+			bWrecked ? 1 : 0,
+			*GetNameSafe(Pilot),
+			*GetNameSafe(CurrentPilot),
+			*ThrustInput.ToCompactString(),
+			*RotationInput.ToCompactString());
+	}
+
 	if (!HasAuthority() || bWrecked)
 	{
 		return;
@@ -379,6 +518,10 @@ void AWalkableShip::ApplyPilotInput(AGalacticPiratesCharacter* Pilot, const FVec
 
 	if (Pilot != CurrentPilot)
 	{
+		if (GPShipMoveLogLevel() > 0)
+		{
+			UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipMove] ApplyPilotInput REJECTED not current pilot"));
+		}
 		return;
 	}
 
@@ -396,7 +539,27 @@ void AWalkableShip::HandlePlayerDisconnected(AGalacticPiratesCharacter* Characte
 		return;
 	}
 
+	if (AActor* Vehicle = Character->GetOccupiedVehicle())
+	{
+		if (UOccupancyComponent* Seat = GPFindPilotOccupancy(Vehicle))
+		{
+			Seat->ForceRelease();
+		}
+	}
+
 	UnregisterPlayer(Character);
+}
+
+bool AWalkableShip::IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const
+{
+	if (const AGalacticPiratesCharacter* Other = Cast<AGalacticPiratesCharacter>(ViewTarget))
+	{
+		if (Other->GetBoardedShip() == this || Other->GetOccupiedVehicle() == this)
+		{
+			return true;
+		}
+	}
+	return Super::IsNetRelevantFor(RealViewer, ViewTarget, SrcLocation);
 }
 
 FTransform AWalkableShip::GetSpawnTransform() const
@@ -532,18 +695,22 @@ FVector AWalkableShip::GetPointVelocity(const FVector& WorldPoint) const
 {
 	const FVector Linear = HasAuthority() && ShipMovement
 		? ShipMovement->GetLinearVelocity()
-		: ReplicatedLinearVelocity;
+		: FVector(ReplicatedLinearVelocity);
 	const FVector AngularDeg = HasAuthority() && ShipMovement
 		? ShipMovement->GetAngularVelocity()
-		: ReplicatedAngularVelocity;
+		: FVector(ReplicatedAngularVelocity);
 	const FVector Omega = FMath::DegreesToRadians(AngularDeg);
 	return Linear + FVector::CrossProduct(Omega, WorldPoint - GetActorLocation());
 }
 
 void AWalkableShip::BroadcastRotationChange()
 {
-	FQuat CurrentRotation = GetActorQuat();
-	
+	if (PlayersAboard.Num() == 0)
+	{
+		return;
+	}
+
+	const FQuat CurrentRotation = GetActorQuat();
 	if (!CurrentRotation.Equals(LastReplicatedRotation, 0.001f))
 	{
 		LastReplicatedRotation = CurrentRotation;
@@ -572,8 +739,12 @@ void AWalkableShip::CleanupAllPlayers()
 		}
 
 		const bool bAi = Character->IsAiCrew();
-		Character->OnShipDestroyed();
-		if (bAi)
+		const bool bAlreadyDead = Character->IsDead();
+		if (!bAlreadyDead)
+		{
+			Character->OnShipDestroyed();
+		}
+		if (bAi && !bAlreadyDead)
 		{
 			Character->Destroy();
 		}
@@ -588,37 +759,138 @@ float AWalkableShip::TakeDamage(float DamageAmount, FDamageEvent const& DamageEv
 	return ApplyShipDamage(DamageAmount, InstigatorCharacter, DamageCauser);
 }
 
-void AWalkableShip::SetHealth(float NewHealth)
+void AWalkableShip::SyncHullFromAuthoring()
 {
-	if (!HasAuthority() || bWrecked)
+	if (!HullHealth)
 	{
 		return;
 	}
 
-	CurrentHealth = FMath::Clamp(NewHealth, 0.0f, MaxHealth);
-	OnRep_CurrentHealth();
+	HullHealth->MaxHealth = MaxHealth;
+	HullHealth->ArmorClass = ArmorClass;
+}
+
+bool AWalkableShip::IsWrecked() const
+{
+	return bWrecked || (HullHealth && HullHealth->IsDestroyed());
+}
+
+float AWalkableShip::GetHealth() const
+{
+	return HullHealth ? HullHealth->GetHealth() : 0.0f;
+}
+
+float AWalkableShip::GetHealthPercent() const
+{
+	return HullHealth ? HullHealth->GetHealthPercent() : 0.0f;
+}
+
+float AWalkableShip::GetMaxHealth() const
+{
+	return HullHealth ? HullHealth->GetMaxHealth() : MaxHealth;
+}
+
+UShipMovementComponent* AWalkableShip::GetSpaceMovement() const
+{
+	return ShipMovement;
+}
+
+UHullHealthComponent* AWalkableShip::GetHullHealth() const
+{
+	return HullHealth;
+}
+
+bool AWalkableShip::IsCraftWrecked() const
+{
+	return IsWrecked();
+}
+
+FVector AWalkableShip::GetCraftVelocity() const
+{
+	return GetPointVelocity(GetActorLocation());
+}
+
+USceneComponent* AWalkableShip::GetHomingSceneComponent() const
+{
+	return CombatHull ? static_cast<USceneComponent*>(CombatHull) : GetRootComponent();
+}
+
+bool AWalkableShip::HasHumanOccupant() const
+{
+	return HasHumanCrew();
+}
+
+FName AWalkableShip::GetAffiliationId() const
+{
+	return AffiliationId;
+}
+
+AActor* AWalkableShip::GetHomeCraft() const
+{
+	return const_cast<AWalkableShip*>(this);
+}
+
+UOccupancyComponent* AWalkableShip::GetPilotOccupancy() const
+{
+	return HelmOccupancy;
+}
+
+void AWalkableShip::NotifyCraftWrecked()
+{
+	Explode();
+}
+
+void AWalkableShip::HandleHullHealthChanged(float InCurrentHealth, float InMaxHealth)
+{
+	if (GPCombatLogEnabled())
+	{
+		UE_LOG(LogGalacticPirates, Log, TEXT("[ShipCombat] Health on %s health=%.1f/%.1f net=%d"),
+			*GetName(),
+			InCurrentHealth,
+			InMaxHealth,
+			static_cast<int32>(GetNetMode()));
+	}
+
+	if (!bWrecked && LastNotifiedHealth > InCurrentHealth + 0.25f)
+	{
+		TriggerInteriorAlarm();
+	}
+	LastNotifiedHealth = InCurrentHealth;
+}
+
+void AWalkableShip::HandleHullDestroyed()
+{
+	Explode();
+}
+
+void AWalkableShip::SetHealth(float NewHealth)
+{
+	if (!HasAuthority() || bWrecked || !HullHealth)
+	{
+		return;
+	}
+
+	SyncHullFromAuthoring();
+	HullHealth->SetHealth(NewHealth);
 }
 
 float AWalkableShip::ApplyShipDamage(float DamageAmount, AGalacticPiratesCharacter* InstigatorCharacter, AActor* DamageCauser)
 {
-	if (!HasAuthority() || bWrecked || DamageAmount <= 0.0f)
+	if (!HasAuthority() || bWrecked || DamageAmount <= 0.0f || !HullHealth)
 	{
 		return 0.0f;
 	}
 
-	const float Applied = FMath::Min(CurrentHealth, DamageAmount);
-	CurrentHealth = FMath::Max(0.0f, CurrentHealth - Applied);
-	OnRep_CurrentHealth();
-	OnShipDamaged.Broadcast(Applied, CurrentHealth);
+	HullHealth->ArmorClass = ArmorClass;
+	HullHealth->MaxHealth = MaxHealth;
 
-	UE_LOG(LogGalacticPirates, Warning,
-		TEXT("[ShipCombat] %s took %.1f damage from %s via %s remaining=%.1f"),
-		*GetName(),
-		Applied,
-		*GetNameSafe(InstigatorCharacter),
-		*GetNameSafe(DamageCauser),
-		CurrentHealth);
-
+	FSpaceDamageEvent Event;
+	Event.Amount = DamageAmount;
+	Event.Kind = ESpaceDamageKind::Generic;
+	Event.InstigatorPawn = InstigatorCharacter;
+	Event.Causer = DamageCauser;
+	const float Applied = HullHealth->ApplyDamage(Event);
+	OnShipDamaged.Broadcast(Applied, GetHealth());
 	return Applied;
 }
 
@@ -630,30 +902,115 @@ void AWalkableShip::Explode()
 	}
 
 	bWrecked = true;
-	CurrentHealth = 0.0f;
-	if (ShipMovement)
+	GPBeginCraftWreck(this, 0.0f);
+
+	if (Helm)
 	{
-		ShipMovement->SetThrustInput(FVector::ZeroVector);
-		ShipMovement->SetRotationInput(FVector::ZeroVector);
-		ShipMovement->SetComponentTickEnabled(false);
+		Helm->ForceRelease();
+	}
+	if (PortMinigun)
+	{
+		PortMinigun->ForceRelease();
+	}
+	if (StarboardMinigun)
+	{
+		StarboardMinigun->ForceRelease();
 	}
 
-	CleanupAllPlayers();
+	const FVector Epicenter = GetActorLocation();
+	TArray<AGalacticPiratesCharacter*> Occupants = PlayersAboard;
+	for (AGalacticPiratesCharacter* Character : Occupants)
+	{
+		if (Character)
+		{
+			Character->DieInWreck(Epicenter);
+		}
+	}
+	PlayersAboard.Empty();
+	CurrentPilot = nullptr;
+
 	OnRep_Wrecked();
+	SetNetDormancy(DORM_DormantAll);
 	Multicast_Explode();
 	OnShipExploded.Broadcast();
 	SetLifeSpan(WreckLifetime);
 
-	UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipCombat] %s exploded"), *GetName());
+	if (GPCombatLogEnabled())
+	{
+		UE_LOG(LogGalacticPirates, Log, TEXT("[ShipCombat] %s exploded"), *GetName());
+	}
 }
 
-void AWalkableShip::OnRep_CurrentHealth()
+void AWalkableShip::TriggerInteriorAlarm()
 {
-	UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipCombat] Health replicated on %s health=%.1f/%.1f net=%d"),
-		*GetName(),
-		CurrentHealth,
-		MaxHealth,
-		static_cast<int32>(GetNetMode()));
+	if (bWrecked || GetHealthPercent() >= 0.2f)
+	{
+		return;
+	}
+
+	InteriorAlarmTime = FMath::Max(InteriorAlarmTime, 3.6f);
+}
+
+void AWalkableShip::ApplyAlarmLightFlash(float IntensityScale)
+{
+	UPointLightComponent* Lights[] = {
+		AlarmLightFore, AlarmLightMid, AlarmLightAft, AlarmLightPort, AlarmLightStarboard
+	};
+	const float Intensity = 9000.0f * FMath::Clamp(IntensityScale, 0.0f, 1.0f);
+	for (UPointLightComponent* Light : Lights)
+	{
+		if (Light)
+		{
+			Light->SetIntensity(Intensity);
+			Light->SetVisibility(Intensity > 1.0f);
+		}
+	}
+}
+
+bool AWalkableShip::ShouldPlayInteriorAlarmAudio() const
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_DedicatedServer)
+	{
+		return false;
+	}
+
+	if (GetHealthPercent() >= 0.2f)
+	{
+		return false;
+	}
+
+	const APlayerController* PC = World->GetFirstPlayerController();
+	const AGalacticPiratesCharacter* LocalCrew = PC ? Cast<AGalacticPiratesCharacter>(PC->GetPawn()) : nullptr;
+	return LocalCrew && !LocalCrew->IsDead() && LocalCrew->GetBoardedShip() == this;
+}
+
+void AWalkableShip::TickInteriorAlarm(float DeltaTime)
+{
+	if (bWrecked || InteriorAlarmTime <= 0.0f || GetHealthPercent() >= 0.2f)
+	{
+		InteriorAlarmTime = 0.0f;
+		InteriorSirenTimer = 0.0f;
+		ApplyAlarmLightFlash(0.0f);
+		return;
+	}
+
+	InteriorAlarmTime -= DeltaTime;
+	const float Pulse = (FMath::Fmod(GetWorld() ? GetWorld()->GetTimeSeconds() * 3.4f : 0.0f, 1.0f) < 0.48f) ? 1.0f : 0.06f;
+	ApplyAlarmLightFlash(Pulse);
+
+	if (!ShouldPlayInteriorAlarmAudio())
+	{
+		InteriorSirenTimer = 0.0f;
+		return;
+	}
+
+	InteriorSirenTimer -= DeltaTime;
+	if (InteriorSirenTimer <= 0.0f)
+	{
+		GPPlayPolishSound2D(this, TEXT("SFX_Alarm"), 0.9f);
+		InteriorSirenTimer = 4.2f;
+	}
 }
 
 void AWalkableShip::OnRep_Wrecked()
@@ -681,6 +1038,11 @@ void AWalkableShip::OnRep_Wrecked()
 	{
 		CombatHull->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	}
+
+	InteriorAlarmTime = 0.0f;
+	InteriorSirenTimer = 0.0f;
+	ApplyAlarmLightFlash(0.0f);
+	SetNetDormancy(DORM_DormantAll);
 }
 
 void AWalkableShip::Multicast_Explode_Implementation()
@@ -702,10 +1064,12 @@ void AWalkableShip::Multicast_Explode_Implementation()
 			{
 				Debris->InitializeFromShip(this);
 			}
-			GPPlayPolishSound2D(this, TEXT("SFX_Explosion"), 1.15f);
-			GPPlayPolishSound2D(this, TEXT("SFX_ExplosionBass"), 1.0f);
-			GPPlayPolishSoundAt(this, TEXT("SFX_Explosion"), GetActorLocation(), 1.25f);
-			GPPlayPolishSoundAt(this, TEXT("SFX_ExplosionBass"), GetActorLocation(), 1.1f);
+			GPPlayPolishSound2D(this, TEXT("SFX_ExplosionWreck"), 1.1f);
+			GPPlayPolishSound2D(this, TEXT("SFX_Explosion"), 0.85f);
+			GPPlayPolishSound2D(this, TEXT("SFX_ExplosionBass"), 1.05f);
+			GPPlayPolishSoundAt(this, TEXT("SFX_ExplosionWreck"), GetActorLocation(), 1.2f);
+			GPPlayPolishSoundAt(this, TEXT("SFX_Explosion"), GetActorLocation(), 0.9f);
+			GPPlayPolishSoundAt(this, TEXT("SFX_ExplosionBass"), GetActorLocation(), 1.15f);
 			GPPlayExplosionCameraShake(World, GetActorLocation(), 400.0f, 9000.0f, 1.0f);
 		}
 	}

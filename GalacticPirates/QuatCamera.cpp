@@ -37,6 +37,15 @@ void UQuatCamera::TickComponent(float DeltaTime, ELevelTick TickType, FActorComp
 		return;
 	}
 
+	if (bDeathFollow)
+	{
+		if (AGalacticPiratesCharacter* Crew = Cast<AGalacticPiratesCharacter>(OwnerPawn))
+		{
+			Crew->UpdateDeathCamera(DeltaTime);
+		}
+		return;
+	}
+
 	if (bGunSightLock)
 	{
 		return;
@@ -112,6 +121,11 @@ void UQuatCamera::ResetOrientation()
 void UQuatCamera::SetGunSightLock(bool bLocked)
 {
 	bGunSightLock = bLocked;
+}
+
+void UQuatCamera::SetDeathFollow(bool bFollow)
+{
+	bDeathFollow = bFollow;
 }
 
 FVector UQuatCamera::GetPlanarLookForward() const

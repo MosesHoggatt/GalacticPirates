@@ -10,6 +10,7 @@ class UPointLightComponent;
 class AWalkableShip;
 class APawn;
 class UHoloMapPoiComponent;
+class UHullHealthComponent;
 
 float GPComputeMissileHeatScore(const FVector& Origin, const FVector& Forward, const FVector& TargetLocation, float TargetHeat, float MinDot);
 
@@ -33,14 +34,17 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UHoloMapPoiComponent> HoloPoi;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UHullHealthComponent> HullHealth;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile")
 	float Damage = 180.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile")
-	float FuseSeconds = 12.0f;
+	float FuseSeconds = 7.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile")
-	float HomingAcceleration = 9000.0f;
+	float HomingAcceleration = 16335.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile")
 	float RetargetInterval = 0.12f;
@@ -49,13 +53,19 @@ public:
 	float HeatSeekMinDot = 0.15f;
 
 	UFUNCTION(BlueprintCallable, Category = "Missile")
-	void InitializeMissile(AWalkableShip* InSourceShip, AWalkableShip* InTarget, APawn* InInstigator, float InDamage, float Speed);
+	void InitializeMissile(AActor* InSource, AActor* InTarget, APawn* InInstigator, float InDamage, float Speed, const FVector& InheritedVelocity = FVector::ZeroVector);
 
 	UFUNCTION(BlueprintPure, Category = "Missile")
-	AWalkableShip* GetLockedTarget() const { return LockedTarget; }
+	AWalkableShip* GetLockedTarget() const;
 
 	UFUNCTION(BlueprintPure, Category = "Missile")
-	AWalkableShip* GetSourceShip() const { return SourceShip; }
+	AActor* GetLockedTargetActor() const { return LockedTarget; }
+
+	UFUNCTION(BlueprintPure, Category = "Missile")
+	AWalkableShip* GetSourceShip() const;
+
+	UFUNCTION(BlueprintPure, Category = "Missile")
+	AActor* GetSourceActor() const { return SourceActor; }
 
 	UFUNCTION(BlueprintCallable, Category = "Missile")
 	bool ApplyMinigunHit(float InDamage, APawn* InInstigator);
@@ -63,7 +73,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Missile", meta = (ClampMin = "1.0"))
 	float MissileHealth = 18.0f;
 
-	AWalkableShip* FindHottestTarget() const;
+	AActor* FindHottestTarget() const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -73,13 +83,19 @@ protected:
 	virtual void NotifyHit(UPrimitiveComponent* MyComp, AActor* Other, UPrimitiveComponent* OtherComp, bool bSelfMoved, FVector HitLocation, FVector HitNormal, FVector NormalImpulse, const FHitResult& Hit) override;
 
 	UPROPERTY(Replicated)
-	TObjectPtr<AWalkableShip> SourceShip;
+	TObjectPtr<AActor> SourceActor;
 
 	UPROPERTY(ReplicatedUsing = OnRep_LockedTarget)
-	TObjectPtr<AWalkableShip> LockedTarget;
+	TObjectPtr<AActor> LockedTarget;
 
 	UFUNCTION()
 	void OnRep_LockedTarget();
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_DetonateFx(FVector_NetQuantize Location, bool bShipHit);
+
+	UFUNCTION()
+	void HandleHullDestroyed();
 
 private:
 	UPROPERTY()
@@ -87,10 +103,11 @@ private:
 
 	bool bDetonated = false;
 	float RetargetTimer = 0.0f;
-	float RemainingHealth = 18.0f;
+	float FuseElapsed = 0.0f;
 
 	void AcquireOrRefreshTarget();
 	void ApplyHoming();
-	void Detonate(AWalkableShip* HitShip);
+	void Detonate(AActor* HitActor);
+	void PlayDetonationFx(const FVector& Location, bool bShipHit);
 	void IgnoreSourceCollision();
 };

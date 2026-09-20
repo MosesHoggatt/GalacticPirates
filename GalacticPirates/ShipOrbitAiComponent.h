@@ -43,6 +43,6 @@ private:
 	UPROPERTY()
 	TObjectPtr<AWalkableShip> OwningShip;
 
-	AWalkableShip* FindOrbitTarget() const;
-	void ApplyOrbitSteering(AWalkableShip* Target);
+	AActor* FindOrbitTarget() const;
+	void ApplyOrbitSteering(AActor* Target);
 };

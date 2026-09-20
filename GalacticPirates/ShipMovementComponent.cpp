@@ -1,10 +1,15 @@
 #include "ShipMovementComponent.h"
 #include "WalkableShip.h"
+#include "SpaceCraft.h"
+#include "GalacticPirates.h"
+#include "ShipDebug.h"
 #include "Net/UnrealNetwork.h"
 
 UShipMovementComponent::UShipMovementComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = true;
+	PrimaryComponentTick.bAllowTickOnDedicatedServer = true;
 	PrimaryComponentTick.TickGroup = TG_PrePhysics;
 	SetIsReplicatedByDefault(false);
 }
@@ -15,6 +20,8 @@ void UShipMovementComponent::BeginPlay()
 	
 	ThrustInput = FVector::ZeroVector;
 	RotationInput = FVector::ZeroVector;
+	HeldThrustInput = FVector::ZeroVector;
+	HeldRotationInput = FVector::ZeroVector;
 	LinearVelocity = FVector::ZeroVector;
 	AngularVelocity = FVector::ZeroVector;
 }
@@ -22,18 +29,19 @@ void UShipMovementComponent::BeginPlay()
 void UShipMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	TickPhysics(DeltaTime);
+}
 
+void UShipMovementComponent::TickPhysics(float DeltaTime)
+{
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
 		return;
 	}
 
-	if (const AWalkableShip* Ship = Cast<AWalkableShip>(GetOwner()))
+	if (GPIsCraftWrecked(GetOwner()))
 	{
-		if (Ship->IsWrecked())
-		{
-			return;
-		}
+		return;
 	}
 
 	ApplyThrust(DeltaTime);
@@ -47,8 +55,23 @@ void UShipMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 	ClampVelocities();
 	IntegrateVelocities(DeltaTime);
 
-	ThrustInput = FVector::ZeroVector;
-	RotationInput = FVector::ZeroVector;
+	if (GPShipMoveLogLevel() > 0 && (GFrameCounter % 15) == 0)
+	{
+		UE_LOG(LogGalacticPirates, Warning,
+			TEXT("[ShipMove] Tick %s tickOn=%d wreck=%d override=%d mass=%.0f thrust=%s rot=%s heldT=%s heldR=%s lin=%.1f ang=%.1f loc=%s"),
+			*GetNameSafe(GetOwner()),
+			PrimaryComponentTick.IsTickFunctionEnabled() ? 1 : 0,
+			GPIsCraftWrecked(GetOwner()) ? 1 : 0,
+			bVelocityOverride ? 1 : 0,
+			ShipMass,
+			*ThrustInput.ToCompactString(),
+			*RotationInput.ToCompactString(),
+			*HeldThrustInput.ToCompactString(),
+			*HeldRotationInput.ToCompactString(),
+			LinearVelocity.Size(),
+			AngularVelocity.Size(),
+			*GetOwner()->GetActorLocation().ToCompactString());
+	}
 }
 
 void UShipMovementComponent::SetThrustInput(const FVector& Input)
@@ -56,6 +79,11 @@ void UShipMovementComponent::SetThrustInput(const FVector& Input)
 	ThrustInput.X = FMath::Clamp(Input.X, -1.0f, 1.0f);
 	ThrustInput.Y = FMath::Clamp(Input.Y, -1.0f, 1.0f);
 	ThrustInput.Z = FMath::Clamp(Input.Z, -1.0f, 1.0f);
+	HeldThrustInput = ThrustInput;
+	if (GPShipMoveLogLevel() > 1)
+	{
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipMove] SetThrust %s -> %s"), *GetNameSafe(GetOwner()), *ThrustInput.ToCompactString());
+	}
 }
 
 void UShipMovementComponent::SetRotationInput(const FVector& Input)
@@ -63,6 +91,11 @@ void UShipMovementComponent::SetRotationInput(const FVector& Input)
 	RotationInput.X = FMath::Clamp(Input.X, -1.0f, 1.0f);
 	RotationInput.Y = FMath::Clamp(Input.Y, -1.0f, 1.0f);
 	RotationInput.Z = FMath::Clamp(Input.Z, -1.0f, 1.0f);
+	HeldRotationInput = RotationInput;
+	if (GPShipMoveLogLevel() > 1)
+	{
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[ShipMove] SetRotation %s -> %s"), *GetNameSafe(GetOwner()), *RotationInput.ToCompactString());
+	}
 }
 
 void UShipMovementComponent::SetLinearVelocity(const FVector& NewVelocity)

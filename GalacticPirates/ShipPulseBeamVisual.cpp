@@ -2,6 +2,8 @@
 #include "ShipPolish.h"
 #include "WalkableShip.h"
 #include "GalacticPiratesCharacter.h"
+#include "HullHealthComponent.h"
+#include "CombatTypes.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
@@ -215,15 +217,20 @@ void AShipPulseBeamVisual::ApplyOverlapDamage(float DeltaTime, float Intensity)
 			continue;
 		}
 
-		if (AWalkableShip* HitShip = Cast<AWalkableShip>(HitActor))
+		if (UHullHealthComponent* Hull = GPFindHullHealth(HitActor))
 		{
-			if (HitShip->IsWrecked())
+			if (Hull->IsDestroyed())
 			{
 				continue;
 			}
 
 			DamagedThisTick.Add(HitActor);
-			HitShip->ApplyShipDamage(Amount, Cast<AGalacticPiratesCharacter>(InstigatorPawn), SourceShip);
+			FSpaceDamageEvent Event;
+			Event.Amount = Amount;
+			Event.Kind = ESpaceDamageKind::Energy;
+			Event.InstigatorPawn = Cast<APawn>(InstigatorPawn);
+			Event.Causer = SourceShip;
+			GPApplySpaceDamage(HitActor, Event);
 			continue;
 		}
 

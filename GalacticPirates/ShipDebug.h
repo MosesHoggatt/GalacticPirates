@@ -29,3 +29,6 @@ void GPTickDedicatedNetTest(UWorld* World, float DeltaTime);
 bool GPDedicatedNetTestEnabled();
 void GPStartShipDuelTest(UWorld* World);
 void GPTickShipDuelTest(UWorld* World, float DeltaTime);
+int32 GPShipMoveLogLevel();
+void GPStartShipMoveProbe(UWorld* World);
+void GPTickShipMoveProbe(UWorld* World, float DeltaTime);

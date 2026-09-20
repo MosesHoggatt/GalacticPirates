@@ -1,5 +1,6 @@
 #include "ShipPulseCannonComponent.h"
 #include "WalkableShip.h"
+#include "SpaceCraft.h"
 #include "WeaponTerminalComponent.h"
 #include "GalacticPiratesCharacter.h"
 #include "ShipPulseBeamVisual.h"
@@ -56,17 +57,30 @@ void UShipPulseCannonComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 		bRechargeBroadcastPending = false;
 		OnPulseCannonRecharged.Broadcast();
 		Multicast_Recharged();
-		UE_LOG(LogGalacticPirates, Warning, TEXT("[PulseCannon] Recharged on %s"), *GetNameSafe(GetOwner()));
+		if (GPCombatLogEnabled())
+		{
+			UE_LOG(LogGalacticPirates, Log, TEXT("[PulseCannon] Recharged on %s"), *GetNameSafe(GetOwner()));
+		}
 	}
 }
 
 bool UShipPulseCannonComponent::CanFire() const
 {
-	if (!OwningShip || OwningShip->IsWrecked())
+	if (!GetOwner() || GPIsCraftWrecked(GetOwner()))
 	{
 		return false;
 	}
 	return CooldownRemaining <= KINDA_SMALL_NUMBER;
+}
+
+bool UShipPulseCannonComponent::CanFireWeapon() const
+{
+	return CanFire();
+}
+
+bool UShipPulseCannonComponent::TryFireWeapon(APawn* InstigatorPawn)
+{
+	return Fire(Cast<AGalacticPiratesCharacter>(InstigatorPawn));
 }
 
 float UShipPulseCannonComponent::GetRechargeAlpha() const
@@ -157,7 +171,7 @@ bool UShipPulseCannonComponent::FireInternal(AGalacticPiratesCharacter* Operator
 		UE_LOG(LogGalacticPirates, Warning, TEXT("[PulseCannon] Fire denied on %s cooldown=%.2f wrecked=%s"),
 			*GetNameSafe(OwningShip),
 			CooldownRemaining,
-			(OwningShip && OwningShip->IsWrecked()) ? TEXT("true") : TEXT("false"));
+			GPIsCraftWrecked(GetOwner()) ? TEXT("true") : TEXT("false"));
 		return false;
 	}
 
@@ -210,17 +224,21 @@ bool UShipPulseCannonComponent::FireInternal(AGalacticPiratesCharacter* Operator
 			continue;
 		}
 
-		AWalkableShip* CandidateShip = Cast<AWalkableShip>(HitActor);
-		if (!CandidateShip && Hit.GetComponent())
+		AActor* CandidateCraft = GPAsSpaceCraft(HitActor) ? HitActor : nullptr;
+		if (!CandidateCraft && Hit.GetComponent() && Hit.GetComponent()->GetOwner())
 		{
-			CandidateShip = Cast<AWalkableShip>(Hit.GetComponent()->GetOwner());
+			AActor* OwnerActor = Hit.GetComponent()->GetOwner();
+			if (GPAsSpaceCraft(OwnerActor))
+			{
+				CandidateCraft = OwnerActor;
+			}
 		}
 
-		if (CandidateShip && CandidateShip != OwningShip)
+		if (CandidateCraft && CandidateCraft != GetOwner())
 		{
 			if (!HitShip)
 			{
-				HitShip = CandidateShip;
+				HitShip = Cast<AWalkableShip>(CandidateCraft);
 			}
 			continue;
 		}
@@ -266,8 +284,10 @@ void UShipPulseCannonComponent::Multicast_PulseFired_Implementation(FVector_NetQ
 		GPPlayPolishSoundAt(this, TEXT("SFX_PulseFire"), Start, 1.0f);
 		if (bHit)
 		{
-			GPPlayPolishSound2D(this, TEXT("SFX_Impact"), 0.9f);
-			GPPlayPolishSoundAt(this, TEXT("SFX_Impact"), End, 1.05f);
+			GPPlayPolishSound2D(this, TEXT("SFX_ExplosionHit"), 0.55f);
+			GPPlayPolishSoundAt(this, TEXT("SFX_ExplosionHit"), End, 0.7f);
+			GPPlayPolishSound2D(this, TEXT("SFX_Impact"), 0.75f);
+			GPPlayPolishSoundAt(this, TEXT("SFX_Impact"), End, 0.9f);
 		}
 		GPPlayCannonCameraShake(GetWorld(), Start, 200.0f, 4500.0f, 0.85f);
 	}

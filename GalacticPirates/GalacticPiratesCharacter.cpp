@@ -7,6 +7,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "EnhancedInputLibrary.h"
 #include "InputAction.h"
 #include "InputActionValue.h"
 #include "InputCoreTypes.h"
@@ -15,7 +16,12 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Interfaces/MovementBaseInterface.h"
+#include "ShipWreckDebris.h"
 #include "WalkableShip.h"
+#include "BulldogFighter.h"
+#include "OccupancyComponent.h"
+#include "CraftWreck.h"
+#include "SpaceCraft.h"
 #include "ShipMovementComponent.h"
 #include "HelmComponent.h"
 #include "WeaponTerminalComponent.h"
@@ -23,14 +29,19 @@
 #include "MinigunPodComponent.h"
 #include "ShipPulseCannonComponent.h"
 #include "ShipMissileSalvoComponent.h"
+#include "CraftReplication.h"
 #include "Net/UnrealNetwork.h"
 #include "GalacticPirates.h"
 #include "ShipDebug.h"
 #include "ShipPolish.h"
+#include "GalacticPiratesPlayerController.h"
+#include "GalacticPiratesHUD.h"
+#include "Blueprint/UserWidget.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "CollisionQueryParams.h"
 #include "Engine/EngineTypes.h"
 #include "GameFramework/PlayerInput.h"
 #include "Kismet/GameplayStatics.h"
@@ -82,8 +93,7 @@ AGalacticPiratesCharacter::AGalacticPiratesCharacter()
 	MinigunFireAction = CreateDefaultSubobject<UInputAction>(TEXT("Default Minigun Fire Action"));
 	MinigunFireAction->ValueType = EInputActionValueType::Boolean;
 
-	bReplicates = true;
-	bAlwaysRelevant = true;
+	GPCraftNet::Apply(this, GPCraftNet::Crew());
 
 	BoardedShip = nullptr;
 	SpawnShip = nullptr;
@@ -102,14 +112,16 @@ void AGalacticPiratesCharacter::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 	DOREPLIFETIME(AGalacticPiratesCharacter, BoardedShip);
 	DOREPLIFETIME(AGalacticPiratesCharacter, bIsPiloting);
 	DOREPLIFETIME(AGalacticPiratesCharacter, OccupiedMinigun);
+	DOREPLIFETIME(AGalacticPiratesCharacter, OccupiedVehicle);
 	DOREPLIFETIME(AGalacticPiratesCharacter, bIsAiCrew);
+	DOREPLIFETIME(AGalacticPiratesCharacter, bDead);
 }
 
 void AGalacticPiratesCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (HasAuthority() && !BoardedShip)
+	if (HasAuthority() && !BoardedShip && !bDead)
 	{
 		AWalkableShip* ShipToBoard = SpawnShip;
 		if (!ShipToBoard)
@@ -147,6 +159,15 @@ void AGalacticPiratesCharacter::NotifyControllerChanged()
 void AGalacticPiratesCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	if (bDead)
+	{
+		if (IsLocallyControlled())
+		{
+			UpdateDeathCamera(DeltaTime);
+		}
+		return;
+	}
 
 	if (BoardedShip && IsValid(BoardedShip))
 	{
@@ -203,11 +224,52 @@ void AGalacticPiratesCharacter::Tick(float DeltaTime)
 
 void AGalacticPiratesCharacter::Destroyed()
 {
-	if (HasAuthority() && BoardedShip)
+	if (HasAuthority())
 	{
-		BoardedShip->HandlePlayerDisconnected(this);
+		if (BoardedShip)
+		{
+			BoardedShip->HandlePlayerDisconnected(this);
+		}
+		if (UOccupancyComponent* Seat = GPFindPilotOccupancy(OccupiedVehicle))
+		{
+			Seat->ForceRelease();
+		}
+		if (OccupiedMinigun)
+		{
+			OccupiedMinigun->ForceRelease();
+		}
 	}
 	Super::Destroyed();
+}
+
+bool AGalacticPiratesCharacter::IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const
+{
+	if (const AGalacticPiratesCharacter* Other = Cast<AGalacticPiratesCharacter>(ViewTarget))
+	{
+		if (BoardedShip && BoardedShip == Other->GetBoardedShip())
+		{
+			return true;
+		}
+		if (OccupiedVehicle && OccupiedVehicle == Other->GetOccupiedVehicle())
+		{
+			return true;
+		}
+	}
+	if (ViewTarget && (ViewTarget == BoardedShip || ViewTarget == OccupiedVehicle))
+	{
+		return true;
+	}
+
+	const AActor* Craft = BoardedShip ? static_cast<const AActor*>(BoardedShip) : OccupiedVehicle.Get();
+	if (Craft)
+	{
+		const float CullSq = FMath::Max(GetNetCullDistanceSquared(), Craft->GetNetCullDistanceSquared());
+		if (FVector::DistSquared(SrcLocation, Craft->GetActorLocation()) <= CullSq)
+		{
+			return true;
+		}
+	}
+	return Super::IsNetRelevantFor(RealViewer, ViewTarget, SrcLocation);
 }
 
 void AGalacticPiratesCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -383,7 +445,7 @@ void AGalacticPiratesCharacter::MapRuntimeLocomotionKeys()
 
 void AGalacticPiratesCharacter::BoardShip(AWalkableShip* Ship)
 {
-	if (!HasAuthority() || !Ship || Ship->IsWrecked())
+	if (!HasAuthority() || !Ship || Ship->IsWrecked() || bDead)
 	{
 		return;
 	}
@@ -396,9 +458,13 @@ void AGalacticPiratesCharacter::BoardShip(AWalkableShip* Ship)
 	BoardedShip = Ship;
 	Ship->RegisterPlayer(this);
 
-	const int32 Slot = FMath::Max(0, Ship->GetPlayersAboard().Num() - 1);
-	FTransform SpawnTransform = Ship->GetSpawnTransformForSlot(Slot);
-	SetActorLocationAndRotation(SpawnTransform.GetLocation(), SpawnTransform.GetRotation());
+	const bool bAlreadyOnDeck = Ship->IsWalkableWorldLocation(GetActorLocation()) || Ship->HasDeckBelow(GetActorLocation());
+	if (!bAlreadyOnDeck)
+	{
+		const int32 Slot = FMath::Max(0, Ship->GetPlayersAboard().Num() - 1);
+		const FTransform SpawnTransform = Ship->GetSpawnTransformForSlot(Slot);
+		SetActorLocationAndRotation(SpawnTransform.GetLocation(), SpawnTransform.GetRotation());
+	}
 
 	OnRep_BoardedShip();
 	GPShipDebugSnapshot(this, TEXT("BoardShip"));
@@ -432,6 +498,20 @@ void AGalacticPiratesCharacter::SetAiCrew(bool bNewAiCrew)
 	bIsAiCrew = bNewAiCrew;
 }
 
+void AGalacticPiratesCharacter::SetOccupiedVehicle(AActor* Vehicle)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	OccupiedVehicle = Vehicle;
+	OnRep_OccupiedVehicle();
+}
+
+void AGalacticPiratesCharacter::OnRep_OccupiedVehicle()
+{
+}
+
 void AGalacticPiratesCharacter::SetPiloting(bool bNewPiloting)
 {
 	if (HasAuthority())
@@ -447,9 +527,106 @@ void AGalacticPiratesCharacter::SetPiloting(bool bNewPiloting)
 	}
 }
 
+void AGalacticPiratesCharacter::FlushHeldShipInputsOnTakeHelm()
+{
+	if (!IsLocallyControlled() || !bIsPiloting || !(BoardedShip || OccupiedVehicle))
+	{
+		return;
+	}
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+
+	auto Axis2D = [this](const UInputAction* Action) -> FVector2D
+	{
+		if (!Action)
+		{
+			return FVector2D::ZeroVector;
+		}
+		return UEnhancedInputLibrary::GetBoundActionValue(this, Action).Get<FVector2D>();
+	};
+	auto Axis1D = [this](const UInputAction* Action) -> float
+	{
+		if (!Action)
+		{
+			return 0.0f;
+		}
+		return UEnhancedInputLibrary::GetBoundActionValue(this, Action).Get<float>();
+	};
+
+	FVector Thrust = FVector::ZeroVector;
+	FVector Rotation = FVector::ZeroVector;
+
+	const FVector2D Move = Axis2D(MoveAction);
+	Thrust.X = Move.Y;
+	Thrust.Y = Move.X;
+
+	const FVector2D ShipThrust = Axis2D(ShipThrustAction);
+	if (!ShipThrust.IsNearlyZero())
+	{
+		Thrust.X = ShipThrust.Y;
+		Thrust.Y = ShipThrust.X;
+	}
+	else if (PC && Move.IsNearlyZero())
+	{
+		if (PC->IsInputKeyDown(EKeys::W)) { Thrust.X += 1.0f; }
+		if (PC->IsInputKeyDown(EKeys::S)) { Thrust.X -= 1.0f; }
+		if (PC->IsInputKeyDown(EKeys::D)) { Thrust.Y += 1.0f; }
+		if (PC->IsInputKeyDown(EKeys::A)) { Thrust.Y -= 1.0f; }
+		Thrust.X = FMath::Clamp(Thrust.X, -1.0f, 1.0f);
+		Thrust.Y = FMath::Clamp(Thrust.Y, -1.0f, 1.0f);
+	}
+
+	const float Vertical = Axis1D(ShipVerticalAction);
+	if (!FMath::IsNearlyZero(Vertical))
+	{
+		Thrust.Z = Vertical;
+	}
+	else if (PC)
+	{
+		if (PC->IsInputKeyDown(EKeys::SpaceBar) || PC->GetInputAnalogKeyState(EKeys::Gamepad_RightTriggerAxis) > 0.1f)
+		{
+			Thrust.Z = 1.0f;
+		}
+		else if (PC->IsInputKeyDown(EKeys::LeftControl) || PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftTriggerAxis) > 0.1f)
+		{
+			Thrust.Z = -1.0f;
+		}
+	}
+
+	const FVector2D ShipRot = Axis2D(ShipRotationAction);
+	if (!ShipRot.IsNearlyZero())
+	{
+		Rotation.Y = ShipRot.Y;
+		Rotation.Z = ShipRot.X;
+	}
+
+	const float Roll = Axis1D(ShipRollAction);
+	if (!FMath::IsNearlyZero(Roll))
+	{
+		Rotation.X = Roll;
+	}
+	else if (PC)
+	{
+		if (PC->IsInputKeyDown(EKeys::E) || PC->IsInputKeyDown(EKeys::Gamepad_RightShoulder))
+		{
+			Rotation.X = 1.0f;
+		}
+		else if (PC->IsInputKeyDown(EKeys::Q) || PC->IsInputKeyDown(EKeys::Gamepad_LeftShoulder))
+		{
+			Rotation.X = -1.0f;
+		}
+	}
+
+	AccumulatedThrustInput = Thrust;
+	AccumulatedRotationInput = Rotation;
+	HelmMouseSteer = FVector2D::ZeroVector;
+	TimeSinceLastPilotInputSend = 0.0f;
+	SendAccumulatedPilotInput(true);
+}
+
 void AGalacticPiratesCharacter::OnShipDestroyed()
 {
-	if (!HasAuthority())
+	if (!HasAuthority() || bDead)
 	{
 		return;
 	}
@@ -468,8 +645,265 @@ void AGalacticPiratesCharacter::OnShipDestroyed()
 	OnRep_OccupiedMinigun();
 }
 
+void AGalacticPiratesCharacter::DieInWreck(const FVector& Epicenter)
+{
+	if (bDead)
+	{
+		return;
+	}
+
+	bDead = true;
+
+	if (HasAuthority())
+	{
+		if (OccupiedMinigun)
+		{
+			OccupiedMinigun->ForceRelease();
+		}
+
+		AWalkableShip* Ship = BoardedShip;
+		if (UOccupancyComponent* Seat = GPFindPilotOccupancy(OccupiedVehicle))
+		{
+			Seat->ForceRelease();
+		}
+		OccupiedVehicle = nullptr;
+		if (Ship)
+		{
+			Ship->OnShipRotationChanged.RemoveDynamic(this, &AGalacticPiratesCharacter::OnShipRotationChanged);
+			if (Ship->IsPilot(this))
+			{
+				Ship->ReleasePilot(this);
+			}
+			Ship->UnregisterPlayer(this);
+		}
+
+		BoardedShip = nullptr;
+		bIsPiloting = false;
+		OccupiedMinigun = nullptr;
+		ClearMovementBase();
+		DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		SetLifeSpan(24.0f);
+
+		if (APlayerController* PC = Cast<APlayerController>(GetController()))
+		{
+			DisableInput(PC);
+			PC->SetIgnoreMoveInput(true);
+			PC->SetIgnoreLookInput(true);
+		}
+
+		Multicast_WreckRagdoll(Epicenter);
+	}
+}
+
+void AGalacticPiratesCharacter::OnRep_Dead()
+{
+	if (bDead && GetMesh() && !GetMesh()->IsSimulatingPhysics())
+	{
+		ApplyWreckRagdoll(GetActorLocation());
+	}
+}
+
+void AGalacticPiratesCharacter::Multicast_WreckRagdoll_Implementation(FVector Epicenter)
+{
+	bDead = true;
+	ApplyWreckRagdoll(Epicenter);
+}
+
+void AGalacticPiratesCharacter::ApplyWreckRagdoll(const FVector& Epicenter)
+{
+	bDead = true;
+	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	SetReplicateMovement(false);
+
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		MoveComp->StopMovementImmediately();
+		MoveComp->DisableMovement();
+		MoveComp->SetComponentTickEnabled(false);
+		MoveComp->GravityScale = 0.0f;
+		MoveComp->SetMovementMode(MOVE_None);
+		MoveComp->SetBase(static_cast<FMovementBaseInterfaceData*>(nullptr));
+	}
+
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Capsule->SetEnableGravity(false);
+	}
+
+	if (QuatCameraComponent)
+	{
+		QuatCameraComponent->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+		QuatCameraComponent->SetUsingAbsoluteLocation(true);
+		QuatCameraComponent->SetUsingAbsoluteRotation(true);
+		QuatCameraComponent->SetVisibility(true);
+		QuatCameraComponent->SetHiddenInGame(false);
+		QuatCameraComponent->bEnableFirstPersonFieldOfView = false;
+		QuatCameraComponent->bEnableFirstPersonScale = false;
+		QuatCameraComponent->SetComponentTickEnabled(true);
+		QuatCameraComponent->SetGunSightLock(false);
+		QuatCameraComponent->SetDeathFollow(true);
+	}
+
+	if (FirstPersonMesh)
+	{
+		FirstPersonMesh->SetVisibility(false, false);
+		FirstPersonMesh->SetHiddenInGame(true);
+		FirstPersonMesh->SetSimulatePhysics(false);
+		FirstPersonMesh->SetOwnerNoSee(true);
+		FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
+	}
+
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!Body)
+	{
+		return;
+	}
+
+	Body->SetOnlyOwnerSee(false);
+	Body->SetOwnerNoSee(false);
+	Body->SetHiddenInGame(false);
+	Body->SetVisibility(true, false);
+	Body->bCastHiddenShadow = false;
+	Body->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
+	Body->SetRenderInMainPass(true);
+	Body->SetRenderInDepthPass(true);
+	Body->SetComponentTickEnabled(true);
+	Body->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	Body->UnHideBoneByName(TEXT("head"));
+	Body->UnHideBoneByName(TEXT("Head"));
+	Body->UnHideBoneByName(TEXT("neck_01"));
+	Body->UnHideBoneByName(TEXT("neck_02"));
+	Body->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	Body->SetCollisionObjectType(ECC_PhysicsBody);
+	Body->SetCollisionResponseToAllChannels(ECR_Block);
+	Body->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+	Body->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	Body->SetEnableGravity(true);
+	Body->bBlendPhysics = true;
+	Body->SetAllBodiesSimulatePhysics(true);
+	if (Body->GetBoneName(0) != NAME_None)
+	{
+		Body->SetAllBodiesBelowSimulatePhysics(Body->GetBoneName(0), true, true);
+	}
+	Body->SetAllBodiesPhysicsBlendWeight(1.0f);
+	Body->bPauseAnims = true;
+	AShipWreckDebris::ApplyWreckKick(Body, Epicenter);
+
+	UpdateDeathCamera(0.0f);
+	BeginLocalDeathPresentation();
+}
+
+void AGalacticPiratesCharacter::BeginLocalDeathPresentation()
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC && GetWorld())
+	{
+		PC = GetWorld()->GetFirstPlayerController();
+	}
+	if (!PC || !PC->IsLocalPlayerController())
+	{
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[DeathFX] BeginLocalDeathPresentation skip pc=%s local=%d"),
+			*GetNameSafe(PC),
+			PC && PC->IsLocalPlayerController() ? 1 : 0);
+		return;
+	}
+
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[DeathFX] BeginLocalDeathPresentation crew=%s pc=%s"),
+		*GetName(),
+		*GetNameSafe(PC));
+
+	if (AGalacticPiratesPlayerController* GPPC = Cast<AGalacticPiratesPlayerController>(PC))
+	{
+		GPPC->BeginCrewDeathPresentation();
+		return;
+	}
+
+	PC->ClientSetHUD(AGalacticPiratesHUD::StaticClass());
+	if (AGalacticPiratesHUD* DeathHud = Cast<AGalacticPiratesHUD>(PC->GetHUD()))
+	{
+		DeathHud->BeginDeathPresentation();
+	}
+}
+
+void AGalacticPiratesCharacter::UpdateDeathCamera(float DeltaTime)
+{
+	if (!QuatCameraComponent)
+	{
+		return;
+	}
+
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!Body)
+	{
+		return;
+	}
+
+	if (FirstPersonMesh)
+	{
+		FirstPersonMesh->SetVisibility(false, false);
+		FirstPersonMesh->SetHiddenInGame(true);
+		FirstPersonMesh->SetOwnerNoSee(true);
+		FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
+	}
+
+	TInlineComponentArray<UPrimitiveComponent*> Prims;
+	GetComponents(Prims);
+	for (UPrimitiveComponent* Prim : Prims)
+	{
+		if (!Prim || Prim == FirstPersonMesh)
+		{
+			continue;
+		}
+		Prim->SetOwnerNoSee(false);
+		Prim->SetHiddenInGame(false);
+		Prim->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
+	}
+	Body->SetVisibility(true, false);
+	Body->SetOwnerNoSee(false);
+	Body->SetHiddenInGame(false);
+	Body->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
+
+	auto FindBone = [Body](const FName* Names, int32 Count) -> FName
+	{
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			if (Body->GetBoneIndex(Names[Index]) != INDEX_NONE)
+			{
+				return Names[Index];
+			}
+		}
+		return NAME_None;
+	};
+
+	static const FName HeadNames[] = { TEXT("head"), TEXT("Head"), TEXT("CC_Base_Head") };
+	const FName HeadBone = FindBone(HeadNames, UE_ARRAY_COUNT(HeadNames));
+	const FTransform HeadXf = HeadBone.IsNone()
+		? Body->GetComponentTransform()
+		: Body->GetBoneTransform(HeadBone);
+
+	// Same head-socket remap as living first person, then pitch down 20 degrees from face forward.
+	const FQuat FaceQuat = HeadXf.GetRotation() * FRotator(0.0f, 90.0f, -90.0f).Quaternion();
+	const FQuat CamQuat = FaceQuat * FRotator(-20.0f, 0.0f, 0.0f).Quaternion();
+	const FVector CamLoc = HeadXf.GetLocation();
+
+	QuatCameraComponent->SetUsingAbsoluteLocation(true);
+	QuatCameraComponent->SetUsingAbsoluteRotation(true);
+	QuatCameraComponent->SetVisibility(true);
+	QuatCameraComponent->SetHiddenInGame(false);
+	QuatCameraComponent->bEnableFirstPersonFieldOfView = false;
+	QuatCameraComponent->bEnableFirstPersonScale = false;
+	QuatCameraComponent->FirstPersonScale = 1.0f;
+	QuatCameraComponent->FieldOfView = 90.0f;
+	QuatCameraComponent->SetWorldLocationAndRotation(CamLoc, CamQuat);
+}
+
 void AGalacticPiratesCharacter::OnRep_BoardedShip()
 {
+	if (bDead)
+	{
+		return;
+	}
 	if (BoardedShip)
 	{
 		BoardedShip->OnShipRotationChanged.RemoveDynamic(this, &AGalacticPiratesCharacter::OnShipRotationChanged);
@@ -522,6 +956,7 @@ void AGalacticPiratesCharacter::OnRep_IsPiloting()
 		{
 			QuatCameraComponent->ResetOrientation();
 		}
+		FlushHeldShipInputsOnTakeHelm();
 	}
 	else if (!OccupiedMinigun)
 	{
@@ -809,7 +1244,7 @@ void AGalacticPiratesCharacter::MoveInput(const FInputActionValue& Value)
 
 void AGalacticPiratesCharacter::LookInput(const FInputActionValue& Value)
 {
-	FVector2D LookAxisVector = Value.Get<FVector2D>();
+	FVector2D LookAxisVector = Value.Get<FVector2D>() * GamepadLookSensitivity;
 	DebugLookInputCount++;
 	DebugLastLookInput = LookAxisVector;
 	if (GPShipDebugLevel() >= 3)
@@ -948,7 +1383,7 @@ void AGalacticPiratesCharacter::DoAim(float Yaw, float Pitch)
 	if (OccupiedMinigun)
 	{
 		OccupiedMinigun->AddAimInput(Yaw, Pitch);
-		Server_SendMinigunAim(Yaw, Pitch);
+		Server_SendMinigunAim(Yaw, Pitch, NextMinigunAimSeq++);
 		return;
 	}
 
@@ -1005,9 +1440,9 @@ void AGalacticPiratesCharacter::DoJumpEnd()
 	StopJumping();
 }
 
-void AGalacticPiratesCharacter::SendAccumulatedPilotInput()
+void AGalacticPiratesCharacter::SendAccumulatedPilotInput(bool bForceSend)
 {
-	if (!bIsPiloting || !BoardedShip)
+	if (!bIsPiloting || (!BoardedShip && !OccupiedVehicle))
 	{
 		return;
 	}
@@ -1020,16 +1455,26 @@ void AGalacticPiratesCharacter::SendAccumulatedPilotInput()
 		RotationToSend.Z = HelmMouseSteer.X;
 	}
 
-	if (!AccumulatedThrustInput.IsNearlyZero() || !RotationToSend.IsNearlyZero())
+	if (bForceSend || !AccumulatedThrustInput.IsNearlyZero() || !RotationToSend.IsNearlyZero())
 	{
-		Server_SendPilotInput(AccumulatedThrustInput, RotationToSend);
+		if (GPShipMoveLogLevel() > 0)
+		{
+			UE_LOG(LogGalacticPirates, Warning,
+				TEXT("[ShipMove] SendPilot %s piloting=%d ship=%s thrust=%s rot=%s"),
+				*GetName(),
+				bIsPiloting ? 1 : 0,
+				*GetNameSafe(OccupiedVehicle ? OccupiedVehicle.Get() : BoardedShip),
+				*AccumulatedThrustInput.ToCompactString(),
+				*RotationToSend.ToCompactString());
+		}
+		Server_SendPilotInput(AccumulatedThrustInput, RotationToSend, NextPilotInputSeq++);
 	}
 
 	AccumulatedThrustInput = FVector::ZeroVector;
 	AccumulatedRotationInput = FVector::ZeroVector;
 }
 
-bool AGalacticPiratesCharacter::Server_SendPilotInput_Validate(FVector ThrustInput, FVector RotationInput)
+bool AGalacticPiratesCharacter::Server_SendPilotInput_Validate(FVector ThrustInput, FVector RotationInput, uint32 InputSeq)
 {
 	if (ThrustInput.ContainsNaN() || RotationInput.ContainsNaN())
 	{
@@ -1044,17 +1489,23 @@ bool AGalacticPiratesCharacter::Server_SendPilotInput_Validate(FVector ThrustInp
 	return true;
 }
 
-void AGalacticPiratesCharacter::Server_SendPilotInput_Implementation(FVector ThrustInput, FVector RotationInput)
+void AGalacticPiratesCharacter::Server_SendPilotInput_Implementation(FVector ThrustInput, FVector RotationInput, uint32 InputSeq)
 {
-	if (!bIsPiloting || !BoardedShip)
+	AuthorityReceiveSequencedPilotInput(ThrustInput, RotationInput, InputSeq);
+}
+
+void AGalacticPiratesCharacter::AuthorityReceiveSequencedPilotInput(FVector ThrustInput, FVector RotationInput, uint32 InputSeq)
+{
+	if (!HasAuthority() || !bIsPiloting)
 	{
 		return;
 	}
 
-	if (!BoardedShip->IsPilot(this))
+	if (InputSeq != 0 && InputSeq <= LastAcceptedPilotInputSeq)
 	{
 		return;
 	}
+	LastAcceptedPilotInputSeq = InputSeq;
 
 	ThrustInput.X = FMath::Clamp(ThrustInput.X, -1.0f, 1.0f);
 	ThrustInput.Y = FMath::Clamp(ThrustInput.Y, -1.0f, 1.0f);
@@ -1063,22 +1514,48 @@ void AGalacticPiratesCharacter::Server_SendPilotInput_Implementation(FVector Thr
 	RotationInput.Y = FMath::Clamp(RotationInput.Y, -1.0f, 1.0f);
 	RotationInput.Z = FMath::Clamp(RotationInput.Z, -1.0f, 1.0f);
 
-	BoardedShip->ApplyPilotInput(this, ThrustInput, RotationInput);
+	if (ABulldogFighter* Fighter = Cast<ABulldogFighter>(OccupiedVehicle))
+	{
+		Fighter->ApplyPilotInput(this, ThrustInput, RotationInput);
+		return;
+	}
+
+	if (BoardedShip && BoardedShip->IsPilot(this))
+	{
+		BoardedShip->ApplyPilotInput(this, ThrustInput, RotationInput);
+	}
 }
 
 bool AGalacticPiratesCharacter::Server_RequestHelmInteraction_Validate()
 {
-	return BoardedShip != nullptr;
+	return true;
 }
 
 void AGalacticPiratesCharacter::Server_RequestHelmInteraction_Implementation()
 {
-	if (!BoardedShip)
+	bool bHandled = false;
+	if (OccupiedVehicle)
 	{
-		return;
+		if (ABulldogFighter* Fighter = Cast<ABulldogFighter>(OccupiedVehicle))
+		{
+			bHandled = Fighter->TryCockpitInteract(this);
+		}
 	}
-
-	const bool bHandled = BoardedShip->TryStationInteract(this);
+	else if (BoardedShip)
+	{
+		bHandled = BoardedShip->TryStationInteract(this);
+	}
+	else if (AActor* Craft = GPFindOccupiableCraftInRange(this))
+	{
+		if (ABulldogFighter* Fighter = Cast<ABulldogFighter>(Craft))
+		{
+			bHandled = Fighter->TryCockpitInteract(this);
+		}
+		else if (UOccupancyComponent* Seat = GPFindPilotOccupancy(Craft))
+		{
+			bHandled = Seat->TryOccupy(this);
+		}
+	}
 	GPShipDebugEvent(*FString::Printf(TEXT("Server station interact requested handled=%s piloting=%s minigun=%s"),
 		bHandled ? TEXT("true") : TEXT("false"),
 		bIsPiloting ? TEXT("true") : TEXT("false"),
@@ -1097,18 +1574,30 @@ void AGalacticPiratesCharacter::MinigunFireInput(const FInputActionValue& Value)
 	Server_SetMinigunFiring(bFire);
 }
 
-bool AGalacticPiratesCharacter::Server_SendMinigunAim_Validate(float YawDelta, float PitchDelta)
+bool AGalacticPiratesCharacter::Server_SendMinigunAim_Validate(float YawDelta, float PitchDelta, uint32 InputSeq)
 {
 	return !FMath::IsNaN(YawDelta) && !FMath::IsNaN(PitchDelta)
 		&& FMath::Abs(YawDelta) < 90.0f && FMath::Abs(PitchDelta) < 90.0f;
 }
 
-void AGalacticPiratesCharacter::Server_SendMinigunAim_Implementation(float YawDelta, float PitchDelta)
+void AGalacticPiratesCharacter::Server_SendMinigunAim_Implementation(float YawDelta, float PitchDelta, uint32 InputSeq)
 {
-	if (OccupiedMinigun && OccupiedMinigun->GetGunner() == this)
+	AuthorityReceiveSequencedMinigunAim(YawDelta, PitchDelta, InputSeq);
+}
+
+void AGalacticPiratesCharacter::AuthorityReceiveSequencedMinigunAim(float YawDelta, float PitchDelta, uint32 InputSeq)
+{
+	if (!HasAuthority() || !OccupiedMinigun || OccupiedMinigun->GetGunner() != this)
 	{
-		OccupiedMinigun->AddAimInput(YawDelta, PitchDelta);
+		return;
 	}
+
+	if (InputSeq != 0 && InputSeq <= LastAcceptedMinigunAimSeq)
+	{
+		return;
+	}
+	LastAcceptedMinigunAimSeq = InputSeq;
+	OccupiedMinigun->AddAimInput(YawDelta, PitchDelta);
 }
 
 bool AGalacticPiratesCharacter::Server_SetMinigunFiring_Validate(bool bNewFiring)

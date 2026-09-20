@@ -25,6 +25,8 @@ public:
 	/** Constructor */
 	AGalacticPiratesPlayerController();
 
+	void BeginCrewDeathPresentation();
+
 protected:
 
 	/** Input Mapping Contexts */
@@ -52,6 +54,7 @@ protected:
 
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
+	virtual void SetPawn(APawn* InPawn) override;
 
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;

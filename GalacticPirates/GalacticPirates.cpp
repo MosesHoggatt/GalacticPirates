@@ -6,6 +6,7 @@
 #include "GalacticPiratesCharacter.h"
 #include "WalkableShip.h"
 #include "ShipMissileSalvoComponent.h"
+#include "GalacticPiratesHUD.h"
 #include "HoloMapPoiComponent.h"
 #include "HoloMapTypes.h"
 #include "Engine/World.h"
@@ -16,6 +17,17 @@
 IMPLEMENT_PRIMARY_GAME_MODULE( FDefaultGameModuleImpl, GalacticPirates, "GalacticPirates" );
 
 DEFINE_LOG_CATEGORY(LogGalacticPirates);
+
+static TAutoConsoleVariable<int32> CVarGPCombatLog(
+	TEXT("gp.CombatLog"),
+	0,
+	TEXT("If >0, log hull damage and weapon fire."),
+	ECVF_Default);
+
+bool GPCombatLogEnabled()
+{
+	return CVarGPCombatLog.GetValueOnAnyThread() > 0;
+}
 
 static FAutoConsoleCommandWithWorld GDumpShipDebugCommand(
 	TEXT("gp.DumpShipDebug"),
@@ -190,6 +202,19 @@ static FAutoConsoleCommandWithWorld GStartShipDuelTestCommand(
 		GPStartShipDuelTest(World);
 	}));
 
+static FAutoConsoleCommandWithWorld GStartShipMoveProbeCommand(
+	TEXT("gp.StartShipMoveProbe"),
+	TEXT("Log ship movement state and inject thrust/yaw to see why ships do not move."),
+	FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+	{
+		if (!World)
+		{
+			return;
+		}
+
+		GPStartShipMoveProbe(World);
+	}));
+
 static FAutoConsoleCommandWithWorld GTestMissileSalvoCommand(
 	TEXT("gp.TestMissileSalvo"),
 	TEXT("Spawn a dummy target ahead and fire a heat-seeking missile salvo (server/PIE)."),
@@ -221,4 +246,12 @@ static FAutoConsoleCommandWithWorld GTestMissileSalvoCommand(
 		UE_LOG(LogGalacticPirates, Warning, TEXT("[MissileSalvo] gp.TestMissileSalvo fired=%s target=%s"),
 			bFired ? TEXT("true") : TEXT("false"),
 			*GetNameSafe(Target));
+	}));
+
+static FAutoConsoleCommandWithWorld GDeathPresentationTestCommand(
+	TEXT("gp.DeathPresentationTest"),
+	TEXT("Kill the local player and play the death overlay on a wall-clock timeline (watchable)."),
+	FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+	{
+		GPStartDeathPresentationTest(World);
 	}));

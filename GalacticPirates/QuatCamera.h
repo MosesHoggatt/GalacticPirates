@@ -48,6 +48,9 @@ public:
 	/** Skip local yaw/pitch and leave world transform to an external owner (minigun sight). */
 	void SetGunSightLock(bool bLocked);
 
+	void SetDeathFollow(bool bFollow);
+	bool IsDeathFollow() const { return bDeathFollow; }
+
 	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
 	FVector GetPlanarLookForward() const;
 
@@ -64,6 +67,7 @@ private:
 	float LocalPitch;
 	FQuat LastComputedWorldRotation;
 	bool bGunSightLock = false;
+	bool bDeathFollow = false;
 
 	void UpdateReferenceFrame(float DeltaTime);
 	FQuat ComputeWorldRotation() const;

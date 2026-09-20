@@ -1,6 +1,8 @@
 #include "ShipHudWidget.h"
 #include "GalacticPiratesCharacter.h"
 #include "WalkableShip.h"
+#include "HullHealthComponent.h"
+#include "SpaceCraft.h"
 #include "HelmComponent.h"
 #include "WeaponTerminalComponent.h"
 #include "ShipPulseCannonComponent.h"
@@ -18,13 +20,28 @@
 
 FSlateFontInfo UShipHudWidget::MakeFont(int32 Size, bool bBold) const
 {
-	const FString KenneyPath = FPaths::ProjectContentDir() / TEXT("Polish/Fonts/KenneyFutureNarrow.ttf");
-	if (FPaths::FileExists(KenneyPath))
+	static FSlateFontInfo CachedRegular;
+	static FSlateFontInfo CachedBold;
+	static bool bCached = false;
+	if (!bCached)
 	{
-		return FSlateFontInfo(KenneyPath, Size);
+		const FString KenneyPath = FPaths::ProjectContentDir() / TEXT("Polish/Fonts/KenneyFutureNarrow.ttf");
+		if (FPaths::FileExists(KenneyPath))
+		{
+			CachedRegular = FSlateFontInfo(KenneyPath, 16);
+			CachedBold = FSlateFontInfo(KenneyPath, 16);
+		}
+		else
+		{
+			CachedRegular = FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 16);
+			CachedBold = FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 16);
+		}
+		bCached = true;
 	}
 
-	return FCoreStyle::GetDefaultFontStyle(bBold ? TEXT("Bold") : TEXT("Regular"), Size);
+	FSlateFontInfo Font = bBold ? CachedBold : CachedRegular;
+	Font.Size = Size;
+	return Font;
 }
 
 TSharedRef<SWidget> UShipHudWidget::BuildCrosshair()
@@ -35,7 +52,8 @@ TSharedRef<SWidget> UShipHudWidget::BuildCrosshair()
 	{
 		TSharedRef<SBorder> Stroke = SNew(SBorder)
 			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-			.BorderBackgroundColor(Color);
+			.BorderBackgroundColor(Color)
+			.Visibility(EVisibility::HitTestInvisible);
 		CrosshairStrokes.Add(Stroke);
 
 		return SNew(SBox)
@@ -101,9 +119,10 @@ TSharedRef<SWidget> UShipHudWidget::RebuildWidget()
 		.FillColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.4f, 0.12f, 0.95f)));
 
 	Crosshair = BuildCrosshair();
-	Crosshair->SetVisibility(EVisibility::Collapsed);
+	Crosshair->SetVisibility(EVisibility::Hidden);
 
 	return SNew(SSafeZone)
+		.Visibility(EVisibility::HitTestInvisible)
 	[
 		SNew(SOverlay)
 		+ SOverlay::Slot()
@@ -120,6 +139,7 @@ TSharedRef<SWidget> UShipHudWidget::RebuildWidget()
 			SNew(SBorder)
 			.BorderBackgroundColor(FLinearColor(0.02f, 0.05f, 0.08f, 0.62f))
 			.Padding(FMargin(16.0f, 12.0f))
+			.Visibility(EVisibility::HitTestInvisible)
 			[
 				SNew(SBox)
 				.WidthOverride(360.0f)
@@ -159,6 +179,12 @@ TSharedRef<SWidget> UShipHudWidget::RebuildWidget()
 	];
 }
 
+void UShipHudWidget::NativeConstruct()
+{
+	Super::NativeConstruct();
+	SetVisibility(ESlateVisibility::HitTestInvisible);
+}
+
 void UShipHudWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
@@ -169,6 +195,16 @@ void UShipHudWidget::RefreshFromPawn()
 {
 	AGalacticPiratesCharacter* Character = GetOwningPlayerPawn() ? Cast<AGalacticPiratesCharacter>(GetOwningPlayerPawn()) : nullptr;
 	AWalkableShip* Ship = Character ? Character->GetBoardedShip() : nullptr;
+	ISpaceCraft* OccupiedCraft = Character ? GPAsSpaceCraft(Character->GetOccupiedVehicle()) : nullptr;
+	UHullHealthComponent* Hull = nullptr;
+	if (OccupiedCraft)
+	{
+		Hull = OccupiedCraft->GetHullHealth();
+	}
+	else if (Ship)
+	{
+		Hull = Ship->GetHullHealth();
+	}
 
 	if (!PromptText.IsValid() || !HealthBar.IsValid() || !RechargeBar.IsValid() || !MissileBar.IsValid())
 	{
@@ -179,7 +215,7 @@ void UShipHudWidget::RefreshFromPawn()
 	if (Crosshair.IsValid())
 	{
 		const bool bShowCrosshair = Minigun != nullptr;
-		Crosshair->SetVisibility(bShowCrosshair ? EVisibility::HitTestInvisible : EVisibility::Collapsed);
+		Crosshair->SetVisibility(bShowCrosshair ? EVisibility::HitTestInvisible : EVisibility::Hidden);
 
 		const FLinearColor StrokeColor = (Minigun && Minigun->IsFiring())
 			? FLinearColor(1.0f, 0.78f, 0.18f, 1.0f)
@@ -193,9 +229,13 @@ void UShipHudWidget::RefreshFromPawn()
 		}
 	}
 
-	if (!Character || !Ship || Ship->IsWrecked())
+	const bool bHasCraft = OccupiedCraft || Ship;
+	const bool bDestroyed = OccupiedCraft
+		? OccupiedCraft->IsCraftWrecked()
+		: (Ship && Ship->IsWrecked());
+	if (!Character || !bHasCraft || bDestroyed)
 	{
-		PromptText->SetText(Ship && Ship->IsWrecked()
+		PromptText->SetText(bDestroyed
 			? FText::FromString(TEXT("SHIP DESTROYED"))
 			: FText::GetEmpty());
 		HealthBar->SetPercent(0.0f);
@@ -216,15 +256,26 @@ void UShipHudWidget::RefreshFromPawn()
 		return;
 	}
 
-	HealthBar->SetPercent(Ship->GetHealthPercent());
-	if (HealthLabel.IsValid())
+	if (Hull)
 	{
-		HealthLabel->SetText(FText::FromString(FString::Printf(TEXT("HULL  %.0f / %.0f"), Ship->GetHealth(), Ship->MaxHealth)));
+		HealthBar->SetPercent(Hull->GetHealthPercent());
+		if (HealthLabel.IsValid())
+		{
+			HealthLabel->SetText(FText::FromString(FString::Printf(TEXT("HULL  %.0f / %.0f"), Hull->GetHealth(), Hull->GetMaxHealth())));
+		}
+	}
+	else if (Ship)
+	{
+		HealthBar->SetPercent(Ship->GetHealthPercent());
+		if (HealthLabel.IsValid())
+		{
+			HealthLabel->SetText(FText::FromString(FString::Printf(TEXT("HULL  %.0f / %.0f"), Ship->GetHealth(), Ship->GetMaxHealth())));
+		}
 	}
 
 	float Recharge = 1.0f;
 	FString CannonLine = TEXT("CANNON  READY");
-	if (Ship->PulseCannon)
+	if (Ship && Ship->PulseCannon)
 	{
 		Recharge = Ship->PulseCannon->GetRechargeAlpha();
 		if (!Ship->PulseCannon->CanFire())
@@ -240,7 +291,7 @@ void UShipHudWidget::RefreshFromPawn()
 
 	float MissileRecharge = 1.0f;
 	FString MissileLine = TEXT("MISSILES  READY");
-	if (Ship->MissileSalvo)
+	if (Ship && Ship->MissileSalvo)
 	{
 		MissileRecharge = Ship->MissileSalvo->GetRechargeAlpha();
 		if (!Ship->MissileSalvo->CanFire())
@@ -254,5 +305,5 @@ void UShipHudWidget::RefreshFromPawn()
 		MissileLabel->SetText(FText::FromString(MissileLine));
 	}
 
-	PromptText->SetText(Ship->GetInteractPrompt(Character));
+	PromptText->SetText(Ship ? Ship->GetInteractPrompt(Character) : FText::GetEmpty());
 }

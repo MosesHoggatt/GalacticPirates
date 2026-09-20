@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Components/SceneComponent.h"
+#include "WeaponComponent.h"
 #include "ShipPulseCannonComponent.generated.h"
 
 class AWalkableShip;
@@ -11,7 +11,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnPulseCannonFired, AWalkableShi
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnPulseCannonRecharged);
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
-class GALACTICPIRATES_API UShipPulseCannonComponent : public USceneComponent
+class GALACTICPIRATES_API UShipPulseCannonComponent : public UWeaponComponent
 {
 	GENERATED_BODY()
 
@@ -71,6 +71,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Pulse Cannon")
 	bool FireIgnoringTerminalRange(AGalacticPiratesCharacter* Operator);
+
+	virtual bool CanFireWeapon() const override;
+	virtual bool TryFireWeapon(APawn* InstigatorPawn) override;
 
 	UFUNCTION(BlueprintPure, Category = "Pulse Cannon")
 	int32 GetShotsFired() const { return ShotsFired; }
