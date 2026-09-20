@@ -9,6 +9,7 @@
 #include "HolographicMapTableComponent.h"
 #include "HoloMapPoiComponent.h"
 #include "ShipOrbitAiComponent.h"
+#include "ShipCrewAiComponent.h"
 #include "ShipPulseBeamVisual.h"
 #include "ShipWreckDebris.h"
 #include "GalacticPiratesCharacter.h"
@@ -139,6 +140,7 @@ AWalkableShip::AWalkableShip()
 	HoloPoi->bOverridePrimitive = true;
 
 	OrbitAI = CreateDefaultSubobject<UShipOrbitAiComponent>(TEXT("OrbitAI"));
+	CrewAI = CreateDefaultSubobject<UShipCrewAiComponent>(TEXT("CrewAI"));
 
 	CombatHull = CreateDefaultSubobject<UBoxComponent>(TEXT("CombatHull"));
 	CombatHull->SetupAttachment(ShipRoot);
@@ -184,34 +186,9 @@ void AWalkableShip::BeginPlay()
 		GPStartDedicatedNetTest(GetWorld());
 	}
 
-	if (Helm)
-	{
-		GPAttachStationLabel(Helm, FText::FromString(TEXT("HELM")), FColor(90, 220, 255));
-	}
-	if (WeaponTerminal)
-	{
-		GPAttachStationLabel(WeaponTerminal, FText::FromString(TEXT("CANNON")), FColor(255, 170, 60));
-	}
-	if (MissileTerminal)
-	{
-		GPAttachStationLabel(MissileTerminal, FText::FromString(TEXT("MISSILES")), FColor(255, 90, 40));
-	}
-	if (PortMinigun)
-	{
-		GPAttachStationLabel(PortMinigun, FText::FromString(TEXT("GUN")), FColor(255, 210, 70));
-	}
-	if (StarboardMinigun)
-	{
-		GPAttachStationLabel(StarboardMinigun, FText::FromString(TEXT("GUN")), FColor(255, 210, 70));
-	}
-
 	CarveGunPodDoorways();
 	GPApplyPolishVfxMaterial(PortPodBubble, TEXT("circle_05"), FLinearColor(0.35f, 0.62f, 0.9f, 0.35f));
 	GPApplyPolishVfxMaterial(StarboardPodBubble, TEXT("circle_05"), FLinearColor(0.35f, 0.62f, 0.9f, 0.35f));
-	if (MapTable)
-	{
-		GPAttachStationLabel(MapTable, FText::FromString(TEXT("MAP")), FColor(80, 220, 255));
-	}
 }
 
 void AWalkableShip::Tick(float DeltaTime)
@@ -305,6 +282,23 @@ void AWalkableShip::UnregisterPlayer(AGalacticPiratesCharacter* Character)
 	}
 
 	PlayersAboard.Remove(Character);
+}
+
+bool AWalkableShip::HasHumanCrew() const
+{
+	if (CurrentPilot && !CurrentPilot->IsAiCrew())
+	{
+		return true;
+	}
+
+	for (AGalacticPiratesCharacter* Aboard : PlayersAboard)
+	{
+		if (Aboard && !Aboard->IsAiCrew())
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 bool AWalkableShip::RequestPilotAssignment(AGalacticPiratesCharacter* Character)
@@ -569,11 +563,19 @@ void AWalkableShip::CleanupAllPlayers()
 		ReleasePilot(CurrentPilot);
 	}
 
-	for (AGalacticPiratesCharacter* Character : PlayersAboard)
+	TArray<AGalacticPiratesCharacter*> Snapshot = PlayersAboard;
+	for (AGalacticPiratesCharacter* Character : Snapshot)
 	{
-		if (Character)
+		if (!Character)
 		{
-			Character->OnShipDestroyed();
+			continue;
+		}
+
+		const bool bAi = Character->IsAiCrew();
+		Character->OnShipDestroyed();
+		if (bAi)
+		{
+			Character->Destroy();
 		}
 	}
 

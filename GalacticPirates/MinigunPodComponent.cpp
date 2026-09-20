@@ -14,6 +14,8 @@
 #include "CollisionQueryParams.h"
 #include "Interfaces/MovementBaseInterface.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "QuatCamera.h"
 
 UMinigunPodComponent::UMinigunPodComponent()
 {
@@ -37,7 +39,7 @@ void UMinigunPodComponent::BuildRig()
 
 	// A blueprint saved against the old constructor still hands us its own copies of these
 	// components, empty and misparented. Throw those away before building the real rig.
-	USceneComponent* Inherited[] = { YawMount, PitchMount, PodMesh, BarrelMesh, MuzzleFlashMesh, TracerMesh, ImpactFlashMesh, MuzzleLight };
+	USceneComponent* Inherited[] = { YawMount, PitchMount, PodMesh, BarrelMesh, MuzzleFlashMesh, TracerMesh, TracerRibbon, ImpactFlashMesh, MuzzleLight, ImpactLight };
 	for (USceneComponent* Stale : Inherited)
 	{
 		if (Stale && Stale->GetOwner() == Owner)
@@ -51,8 +53,10 @@ void UMinigunPodComponent::BuildRig()
 	BarrelMesh = nullptr;
 	MuzzleFlashMesh = nullptr;
 	TracerMesh = nullptr;
+	TracerRibbon = nullptr;
 	ImpactFlashMesh = nullptr;
 	MuzzleLight = nullptr;
+	ImpactLight = nullptr;
 
 	auto NameFor = [this](const TCHAR* Suffix)
 	{
@@ -69,6 +73,7 @@ void UMinigunPodComponent::BuildRig()
 	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* CylinderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+	UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
 
 	auto MakeMesh = [&](const TCHAR* Suffix, USceneComponent* Parent, UStaticMesh* Mesh)
 	{
@@ -102,19 +107,46 @@ void UMinigunPodComponent::BuildRig()
 	MuzzleFlashMesh->SetVisibility(false);
 
 	ImpactFlashMesh = MakeMesh(TEXT("ImpactFlashMesh"), this, SphereMesh);
-	ImpactFlashMesh->SetRelativeScale3D(FVector(0.9f));
+	ImpactFlashMesh->SetRelativeScale3D(FVector(1.4f));
 	ImpactFlashMesh->SetVisibility(false);
+	ImpactFlashMesh->SetAbsolute(true, true, true);
 
 	TracerMesh = MakeMesh(TEXT("TracerMesh"), this, CylinderMesh);
 	TracerMesh->SetVisibility(false);
+	TracerMesh->SetAbsolute(true, true, true);
+
+	TracerRibbon = MakeMesh(TEXT("TracerRibbon"), this, PlaneMesh);
+	TracerRibbon->SetVisibility(false);
+	TracerRibbon->SetAbsolute(true, true, true);
 
 	MuzzleLight = NewObject<UPointLightComponent>(Owner, NameFor(TEXT("MuzzleLight")));
-	MuzzleLight->SetAttenuationRadius(900.0f);
+	MuzzleLight->SetAttenuationRadius(160.0f);
 	MuzzleLight->SetLightColor(FLinearColor(1.0f, 0.72f, 0.28f));
 	MuzzleLight->SetIntensity(0.0f);
 	MuzzleLight->SetCastShadows(false);
 	Attach(MuzzleLight, PitchMount);
 	MuzzleLight->SetRelativeLocation(FVector(190.0f, 0.0f, 0.0f));
+
+	ImpactLight = NewObject<UPointLightComponent>(Owner, NameFor(TEXT("ImpactLight")));
+	ImpactLight->SetAttenuationRadius(1200.0f);
+	ImpactLight->SetLightColor(FLinearColor(1.0f, 0.55f, 0.15f));
+	ImpactLight->SetIntensity(0.0f);
+	ImpactLight->SetCastShadows(false);
+	Attach(ImpactLight, this);
+	ImpactLight->SetAbsolute(true, true, true);
+
+	SparkMeshes.Reset();
+	SparkVelocity.Reset();
+	SparkLife.Reset();
+	for (int32 Index = 0; Index < 16; ++Index)
+	{
+		UStaticMeshComponent* Spark = MakeMesh(*FString::Printf(TEXT("Spark%d"), Index), this, SphereMesh);
+		Spark->SetVisibility(false);
+		Spark->SetAbsolute(true, true, true);
+		SparkMeshes.Add(Spark);
+		SparkVelocity.Add(FVector::ZeroVector);
+		SparkLife.Add(0.0f);
+	}
 }
 
 void UMinigunPodComponent::BeginPlay()
@@ -125,8 +157,13 @@ void UMinigunPodComponent::BeginPlay()
 	GPApplyPolishVfxMaterial(PodMesh, TEXT("circle_05"), FLinearColor(0.25f, 0.28f, 0.32f, 1.0f));
 	GPApplyPolishVfxMaterial(BarrelMesh, TEXT("circle_05"), FLinearColor(0.55f, 0.45f, 0.2f, 1.0f));
 	GPApplyPolishVfxMaterial(MuzzleFlashMesh, TEXT("muzzle_01"), FLinearColor(6.0f, 3.4f, 1.1f, 1.0f));
-	GPApplyPolishVfxMaterial(ImpactFlashMesh, TEXT("flare_01"), FLinearColor(5.0f, 2.6f, 0.8f, 1.0f));
-	GPApplyPolishVfxMaterial(TracerMesh, TEXT("light_01"), FLinearColor(4.5f, 3.0f, 1.0f, 1.0f));
+	GPApplyPolishVfxMaterial(ImpactFlashMesh, TEXT("flare_01"), FLinearColor(8.0f, 3.2f, 0.6f, 1.0f));
+	GPApplyPolishVfxMaterial(TracerMesh, TEXT("light_01"), FLinearColor(12.0f, 8.0f, 2.0f, 1.0f));
+	GPApplyPolishVfxMaterial(TracerRibbon, TEXT("muzzle_01"), FLinearColor(14.0f, 9.0f, 2.2f, 1.0f));
+	for (UStaticMeshComponent* Spark : SparkMeshes)
+	{
+		GPApplyPolishVfxMaterial(Spark, TEXT("VFX_Ember"), FLinearColor(10.0f, 4.5f, 0.8f, 1.0f));
+	}
 	ApplyMountRotation();
 }
 
@@ -143,6 +180,8 @@ void UMinigunPodComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	UpdateShotFx(DeltaTime);
+	TickSparks(DeltaTime);
+	ApplyGunnerCamera();
 
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
@@ -162,10 +201,11 @@ void UMinigunPodComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	}
 
 	FireTimer -= DeltaTime;
-	while (FireTimer <= 0.0f)
+	const float Interval = FMath::Max(FireInterval, 0.05f);
+	if (FireTimer <= 0.0f)
 	{
 		FireTrace();
-		FireTimer += FireInterval;
+		FireTimer += Interval;
 	}
 }
 
@@ -262,6 +302,7 @@ void UMinigunPodComponent::LockGunner(AGalacticPiratesCharacter* Character)
 	Character->AttachToComponent(this, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
 	Character->SetActorRelativeLocation(FVector(-40.0f, 0.0f, 10.0f));
 	Character->SetActorRelativeRotation(FRotator::ZeroRotator);
+	ApplyGunnerCamera();
 }
 
 void UMinigunPodComponent::UnlockGunner(AGalacticPiratesCharacter* Character)
@@ -271,6 +312,7 @@ void UMinigunPodComponent::UnlockGunner(AGalacticPiratesCharacter* Character)
 		return;
 	}
 	Character->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	Character->RestoreWalkCamera();
 	if (UCharacterMovementComponent* Movement = Character->GetCharacterMovement())
 	{
 		Movement->SetComponentTickEnabled(true);
@@ -281,6 +323,7 @@ void UMinigunPodComponent::UnlockGunner(AGalacticPiratesCharacter* Character)
 void UMinigunPodComponent::OnRep_Gunner()
 {
 	ApplyMountRotation();
+	ApplyGunnerCamera();
 }
 
 void UMinigunPodComponent::OnRep_Aim()
@@ -300,9 +343,55 @@ void UMinigunPodComponent::AddAimInput(float YawDelta, float PitchDelta)
 	ApplyAim(AimYaw + YawDelta * AimSensitivity, AimPitch + PitchDelta * AimSensitivity);
 }
 
+void UMinigunPodComponent::AimAtWorldLocation(const FVector& WorldLocation)
+{
+	const FVector WorldDir = (WorldLocation - GetMuzzleLocation()).GetSafeNormal();
+	if (WorldDir.IsNearlyZero())
+	{
+		return;
+	}
+
+	const FVector LocalDir = GetComponentTransform().InverseTransformVectorNoScale(WorldDir).GetSafeNormal();
+	const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(LocalDir.Y, LocalDir.X));
+	const float Horizontal = FMath::Sqrt(LocalDir.X * LocalDir.X + LocalDir.Y * LocalDir.Y);
+	const float Pitch = FMath::RadiansToDegrees(FMath::Atan2(LocalDir.Z, Horizontal));
+	ApplyAim(Yaw, Pitch);
+}
+
 void UMinigunPodComponent::SetFiring(bool bNewFiring)
 {
 	bFiring = bNewFiring && Gunner != nullptr;
+}
+
+void UMinigunPodComponent::ApplyGunnerCamera()
+{
+	if (!Gunner || !PitchMount)
+	{
+		return;
+	}
+	if (Gunner->GetController() && !Gunner->IsLocallyControlled())
+	{
+		return;
+	}
+
+	UQuatCamera* Camera = Gunner->GetQuatCameraComponent();
+	if (!Camera)
+	{
+		return;
+	}
+
+	Camera->SetGunSightLock(true);
+	if (Camera->GetAttachParent() != PitchMount)
+	{
+		Camera->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+		Camera->AttachToComponent(PitchMount, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+	}
+	Camera->SetRelativeLocation(GunSightOffset);
+	Camera->SetRelativeRotation(FRotator::ZeroRotator);
+	if (USkeletalMeshComponent* Arms = Gunner->GetFirstPersonMesh())
+	{
+		Arms->SetVisibility(false, true);
+	}
 }
 
 void UMinigunPodComponent::ApplyMountRotation()
@@ -384,14 +473,13 @@ void UMinigunPodComponent::FireTrace()
 		Params);
 
 	FVector TracerEnd = End;
-	bool bDidHit = false;
 	if (bHit)
 	{
 		TracerEnd = Hit.ImpactPoint;
 		AActor* HitActor = Hit.GetActor();
 		if (AHeatseekingMissile* Missile = Cast<AHeatseekingMissile>(HitActor))
 		{
-			bDidHit = Missile->ApplyMinigunHit(MissileDamage, Gunner);
+			Missile->ApplyMinigunHit(MissileDamage, Gunner);
 		}
 		else if (AWalkableShip* Ship = Cast<AWalkableShip>(HitActor))
 		{
@@ -401,7 +489,6 @@ void UMinigunPodComponent::FireTrace()
 				if (Damage > 0.0f)
 				{
 					Ship->ApplyShipDamage(Damage, Gunner, OwningShip);
-					bDidHit = true;
 				}
 			}
 		}
@@ -409,7 +496,7 @@ void UMinigunPodComponent::FireTrace()
 		{
 			if (AHeatseekingMissile* CompMissile = Cast<AHeatseekingMissile>(Hit.GetComponent()->GetOwner()))
 			{
-				bDidHit = CompMissile->ApplyMinigunHit(MissileDamage, Gunner);
+				CompMissile->ApplyMinigunHit(MissileDamage, Gunner);
 			}
 			else if (AWalkableShip* CompShip = Cast<AWalkableShip>(Hit.GetComponent()->GetOwner()))
 			{
@@ -419,14 +506,13 @@ void UMinigunPodComponent::FireTrace()
 					if (Damage > 0.0f)
 					{
 						CompShip->ApplyShipDamage(Damage, Gunner, OwningShip);
-						bDidHit = true;
 					}
 				}
 			}
 		}
 	}
 
-	Multicast_Tracer(Start, TracerEnd, bDidHit);
+	Multicast_Tracer(Start, TracerEnd, bHit);
 }
 
 void UMinigunPodComponent::Multicast_Tracer_Implementation(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHit)
@@ -442,85 +528,194 @@ void UMinigunPodComponent::Multicast_Tracer_Implementation(FVector_NetQuantize S
 void UMinigunPodComponent::PlayShotFx(const FVector& Start, const FVector& End, bool bHit)
 {
 	FlashTimer = MuzzleFlashSeconds;
+	TracerTimer = TracerSeconds;
 	++ShotsPlayed;
 
 	if (MuzzleFlashMesh)
 	{
 		const float Spin = static_cast<float>(ShotsPlayed) * 47.0f;
-		const float Jitter = FMath::FRandRange(0.8f, 1.25f);
 		MuzzleFlashMesh->SetRelativeRotation(FRotator(0.0f, 0.0f, Spin));
-		MuzzleFlashMesh->SetRelativeScale3D(FVector(0.55f, 0.35f, 0.35f) * Jitter);
+		MuzzleFlashMesh->SetRelativeScale3D(FVector(0.22f, 0.14f, 0.14f));
 		MuzzleFlashMesh->SetVisibility(true);
+		MuzzleFlashMesh->SetHiddenInGame(false);
 	}
 
 	if (MuzzleLight)
 	{
-		MuzzleLight->SetIntensity(9000.0f);
+		MuzzleLight->SetIntensity(600.0f);
 	}
 
-	if (TracerMesh)
-	{
-		const FVector Delta = End - Start;
-		const float Length = Delta.Size();
-		if (Length > 1.0f)
-		{
-			// The cylinder is 100cm tall on Z, so aim its Z axis down the shot.
-			TracerMesh->SetWorldLocation(Start + Delta * 0.5f);
-			TracerMesh->SetWorldRotation(FRotationMatrix::MakeFromZ(Delta / Length).ToQuat());
-			TracerMesh->SetWorldScale3D(FVector(0.06f, 0.06f, Length / 100.0f));
-			TracerMesh->SetVisibility(true);
-		}
-	}
+	PlaceTracer(Start, End);
 
+	const FVector Incoming = (End - Start).GetSafeNormal();
 	if (ImpactFlashMesh)
 	{
 		ImpactFlashMesh->SetVisibility(bHit);
+		ImpactFlashMesh->SetHiddenInGame(!bHit);
 		if (bHit)
 		{
 			ImpactFlashMesh->SetWorldLocation(End);
-			ImpactFlashMesh->SetWorldScale3D(FVector(FMath::FRandRange(0.7f, 1.2f)));
+			ImpactFlashMesh->SetWorldScale3D(FVector(FMath::FRandRange(1.6f, 2.4f)));
 		}
 	}
 
-	// One sample per shot at 14 rounds/sec turns to mush, so play every other round.
+	if (ImpactLight)
+	{
+		ImpactLight->SetWorldLocation(End);
+		ImpactLight->SetIntensity(bHit ? 14000.0f : 0.0f);
+	}
+
+	if (bHit)
+	{
+		SpawnImpactSparks(End, Incoming);
+	}
+
 	if (ShotsPlayed % 2 == 0)
 	{
 		GPPlayPolishSoundAt(this, TEXT("SFX_PulseFire"), Start, 0.4f);
 	}
 }
 
-void UMinigunPodComponent::UpdateShotFx(float DeltaTime)
+void UMinigunPodComponent::PlaceTracer(const FVector& Start, const FVector& End)
 {
-	if (FlashTimer <= 0.0f)
+	const FVector Delta = End - Start;
+	const float Length = Delta.Size();
+	if (Length <= 1.0f)
 	{
 		return;
 	}
 
-	FlashTimer -= DeltaTime;
-	if (FlashTimer > 0.0f)
+	const FVector Dir = Delta / Length;
+	const float Bolt = FMath::Min(Length, TracerVisibleLength);
+	// Drop the streak just under the bore so a seated gunner sees it instead of looking down the tube.
+	const FVector Drop = PitchMount ? -PitchMount->GetUpVector() * 22.0f : FVector(0.0f, 0.0f, -22.0f);
+	const FVector A = Start + Drop;
+	const FVector Mid = A + Dir * (Bolt * 0.5f);
+
+	if (TracerMesh)
 	{
-		if (MuzzleLight)
+		TracerMesh->SetWorldLocation(Mid);
+		TracerMesh->SetWorldRotation(FRotationMatrix::MakeFromZ(Dir).ToQuat());
+		TracerMesh->SetWorldScale3D(FVector(0.55f, 0.55f, Bolt / 100.0f));
+		TracerMesh->SetVisibility(true);
+		TracerMesh->SetHiddenInGame(false);
+	}
+
+	if (TracerRibbon)
+	{
+		FVector ViewUp = PitchMount ? PitchMount->GetUpVector() : FVector::UpVector;
+		FVector Across = FVector::CrossProduct(ViewUp, Dir).GetSafeNormal();
+		if (Across.IsNearlyZero())
 		{
-			MuzzleLight->SetIntensity(9000.0f * FMath::Max(FlashTimer / MuzzleFlashSeconds, 0.0f));
+			Across = FVector::CrossProduct(FVector::RightVector, Dir).GetSafeNormal();
 		}
-		return;
+		TracerRibbon->SetWorldLocation(Mid);
+		TracerRibbon->SetWorldRotation(FRotationMatrix::MakeFromXY(Across, Dir).ToQuat());
+		TracerRibbon->SetWorldScale3D(FVector(0.7f, Bolt / 100.0f, 1.0f));
+		TracerRibbon->SetVisibility(true);
+		TracerRibbon->SetHiddenInGame(false);
 	}
+}
 
-	FlashTimer = 0.0f;
+void UMinigunPodComponent::SpawnImpactSparks(const FVector& ImpactPoint, const FVector& IncomingDir)
+{
+	const FVector Out = IncomingDir.IsNearlyZero() ? FVector::UpVector : -IncomingDir;
+	for (int32 Index = 0; Index < SparkMeshes.Num(); ++Index)
+	{
+		UStaticMeshComponent* Spark = SparkMeshes[Index];
+		if (!Spark)
+		{
+			continue;
+		}
+
+		const FVector Spray = FMath::VRandCone(Out, FMath::DegreesToRadians(55.0f));
+		Spark->SetWorldLocation(ImpactPoint + Spray * FMath::FRandRange(4.0f, 18.0f));
+		Spark->SetWorldScale3D(FVector(FMath::FRandRange(0.12f, 0.28f)));
+		Spark->SetVisibility(true);
+		Spark->SetHiddenInGame(false);
+		SparkVelocity[Index] = Spray * FMath::FRandRange(900.0f, 2200.0f);
+		SparkLife[Index] = FMath::FRandRange(0.12f, 0.28f);
+	}
+}
+
+void UMinigunPodComponent::TickSparks(float DeltaTime)
+{
+	for (int32 Index = 0; Index < SparkMeshes.Num(); ++Index)
+	{
+		if (SparkLife[Index] <= 0.0f)
+		{
+			continue;
+		}
+
+		SparkLife[Index] -= DeltaTime;
+		UStaticMeshComponent* Spark = SparkMeshes[Index];
+		if (!Spark)
+		{
+			continue;
+		}
+
+		if (SparkLife[Index] <= 0.0f)
+		{
+			SparkLife[Index] = 0.0f;
+			Spark->SetVisibility(false);
+			continue;
+		}
+
+		SparkVelocity[Index] += FVector(0.0f, 0.0f, -600.0f) * DeltaTime;
+		Spark->AddWorldOffset(SparkVelocity[Index] * DeltaTime);
+		Spark->SetWorldScale3D(FVector(0.08f + 0.2f * (SparkLife[Index] / 0.28f)));
+	}
+}
+
+void UMinigunPodComponent::HideMuzzleFlash()
+{
 	if (MuzzleFlashMesh)
 	{
 		MuzzleFlashMesh->SetVisibility(false);
-	}
-	if (TracerMesh)
-	{
-		TracerMesh->SetVisibility(false);
-	}
-	if (ImpactFlashMesh)
-	{
-		ImpactFlashMesh->SetVisibility(false);
+		MuzzleFlashMesh->SetHiddenInGame(true);
 	}
 	if (MuzzleLight)
 	{
 		MuzzleLight->SetIntensity(0.0f);
+	}
+}
+
+void UMinigunPodComponent::UpdateShotFx(float DeltaTime)
+{
+	// One-frame strobe: last tick's muzzle sprite/light is always gone before this tick may fire again.
+	HideMuzzleFlash();
+
+	if (FlashTimer > 0.0f)
+	{
+		FlashTimer -= DeltaTime;
+		if (FlashTimer <= 0.0f)
+		{
+			FlashTimer = 0.0f;
+			if (ImpactLight)
+			{
+				ImpactLight->SetIntensity(0.0f);
+			}
+			if (ImpactFlashMesh)
+			{
+				ImpactFlashMesh->SetVisibility(false);
+			}
+		}
+	}
+
+	if (TracerTimer > 0.0f)
+	{
+		TracerTimer -= DeltaTime;
+		if (TracerTimer <= 0.0f)
+		{
+			TracerTimer = 0.0f;
+			if (TracerMesh)
+			{
+				TracerMesh->SetVisibility(false);
+			}
+			if (TracerRibbon)
+			{
+				TracerRibbon->SetVisibility(false);
+			}
+		}
 	}
 }

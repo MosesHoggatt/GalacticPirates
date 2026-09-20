@@ -37,6 +37,11 @@ void UQuatCamera::TickComponent(float DeltaTime, ELevelTick TickType, FActorComp
 		return;
 	}
 
+	if (bGunSightLock)
+	{
+		return;
+	}
+
 	UpdateReferenceFrame(DeltaTime);
 
 	FQuat WorldRotation = ComputeWorldRotation();
@@ -102,6 +107,11 @@ void UQuatCamera::ResetOrientation()
 {
 	LocalYaw = 0.0f;
 	LocalPitch = 0.0f;
+}
+
+void UQuatCamera::SetGunSightLock(bool bLocked)
+{
+	bGunSightLock = bLocked;
 }
 
 FVector UQuatCamera::GetPlanarLookForward() const

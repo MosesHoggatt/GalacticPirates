@@ -5,6 +5,10 @@
 #include "HoloMapTypes.h"
 #include "MinigunPodComponent.h"
 #include "CombatTypes.h"
+#include "ShipCrewAiComponent.h"
+#include "HelmComponent.h"
+#include "GalacticPiratesCharacter.h"
+#include "QuatCamera.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Engine/World.h"
@@ -236,7 +240,7 @@ bool FGPMinigunShotHasFeedback::RunTest(const FString& Parameters)
 	}
 
 	// A stale blueprint leaves new C++ subobjects owned by the CDO instead of the spawned actor.
-	USceneComponent* FxParts[] = { Pod->MuzzleFlashMesh, Pod->TracerMesh, Pod->ImpactFlashMesh, Pod->MuzzleLight };
+	USceneComponent* FxParts[] = { Pod->MuzzleFlashMesh, Pod->TracerMesh, Pod->TracerRibbon, Pod->ImpactFlashMesh, Pod->MuzzleLight };
 	for (USceneComponent* Part : FxParts)
 	{
 		if (!TestNotNull(TEXT("fx component exists"), Part))
@@ -254,16 +258,89 @@ bool FGPMinigunShotHasFeedback::RunTest(const FString& Parameters)
 	TestTrue(TEXT("muzzle flash has a material"), Pod->MuzzleFlashMesh->GetMaterial(0) != nullptr);
 
 	Pod->PlayShotFx(Pod->GetMuzzleLocation(), Pod->GetMuzzleLocation() + Pod->GetMuzzleForward() * 5000.0f, true);
+	TestTrue(TEXT("muzzle flash is a pulse, not a hold"), Pod->MuzzleFlashSeconds < Pod->FireInterval * 0.4f);
 	TestTrue(TEXT("muzzle flash is visible"), Pod->MuzzleFlashMesh && Pod->MuzzleFlashMesh->IsVisible());
 	TestTrue(TEXT("tracer is visible"), Pod->TracerMesh && Pod->TracerMesh->IsVisible());
+	TestTrue(TEXT("tracer ribbon is visible"), Pod->TracerRibbon && Pod->TracerRibbon->IsVisible());
 	TestTrue(TEXT("impact flash is visible"), Pod->ImpactFlashMesh && Pod->ImpactFlashMesh->IsVisible());
 	TestTrue(TEXT("muzzle light is lit"), Pod->MuzzleLight && Pod->MuzzleLight->Intensity > 0.0f);
-	TestTrue(TEXT("tracer spans the shot"), Pod->TracerMesh && Pod->TracerMesh->GetComponentScale().Z > 40.0f);
+	TestTrue(TEXT("tracer is a short fat bolt"), Pod->TracerMesh
+		&& Pod->TracerMesh->GetComponentScale().Z > 10.0f
+		&& Pod->TracerMesh->GetComponentScale().X > 0.4f);
+	int32 VisibleSparks = 0;
+	for (UStaticMeshComponent* Spark : Pod->SparkMeshes)
+	{
+		if (Spark && Spark->IsVisible())
+		{
+			++VisibleSparks;
+		}
+	}
+	TestTrue(TEXT("impact spawned sparks"), VisibleSparks >= 8);
 
 	Pod->UpdateShotFx(Pod->MuzzleFlashSeconds + 0.01f);
 	TestFalse(TEXT("muzzle flash clears"), Pod->MuzzleFlashMesh->IsVisible());
-	TestFalse(TEXT("tracer clears"), Pod->TracerMesh->IsVisible());
+	TestTrue(TEXT("tracer outlasts the muzzle flash"), Pod->TracerMesh->IsVisible());
 	TestTrue(TEXT("muzzle light goes dark"), Pod->MuzzleLight->Intensity <= 0.0f);
+
+	Pod->UpdateShotFx(Pod->TracerSeconds);
+	TestFalse(TEXT("tracer clears"), Pod->TracerMesh->IsVisible());
+
+	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPMinigunCameraFollowsAim, "GalacticPirates.Minigun.CameraFollowsAim", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGPMinigunCameraFollowsAim::RunTest(const FString& Parameters)
+{
+	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	if (!TestNotNull(TEXT("debug ship blueprint"), ShipClass) || !TestNotNull(TEXT("character blueprint"), CharacterClass))
+	{
+		return false;
+	}
+
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FURL URL;
+	World->InitializeActorsForPlay(URL, true);
+	World->BeginPlay();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AWalkableShip* Ship = Cast<AWalkableShip>(World->SpawnActor<AActor>(ShipClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams));
+	AGalacticPiratesCharacter* Gunner = Cast<AGalacticPiratesCharacter>(World->SpawnActor<AActor>(CharacterClass, FVector(0.0f, 0.0f, 120.0f), FRotator::ZeroRotator, SpawnParams));
+	UMinigunPodComponent* Pod = Ship ? Ship->PortMinigun : nullptr;
+	if (!TestNotNull(TEXT("ship"), Ship) || !TestNotNull(TEXT("gunner"), Gunner) || !TestNotNull(TEXT("pod"), Pod))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+
+	if (!Ship->HasActorBegunPlay())
+	{
+		Ship->DispatchBeginPlay();
+	}
+	if (!Gunner->HasActorBegunPlay())
+	{
+		Gunner->DispatchBeginPlay();
+	}
+
+	Gunner->BoardShip(Ship);
+	Gunner->SetActorLocation(Pod->GetComponentLocation());
+	TestTrue(TEXT("gunner occupies the pod"), Pod->TryInteract(Gunner));
+
+	Pod->ApplyAim(35.0f, -20.0f);
+	Pod->ApplyGunnerCamera();
+	UQuatCamera* Camera = Gunner->GetQuatCameraComponent();
+	if (!TestNotNull(TEXT("camera"), Camera) || !TestTrue(TEXT("pitch mount"), Pod->PitchMount != nullptr))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+
+	TestTrue(TEXT("camera rides the pitch mount"), Camera->GetAttachParent() == Pod->PitchMount);
+	TestTrue(TEXT("camera looks down the barrel"),
+		FVector::DotProduct(Camera->GetForwardVector().GetSafeNormal(), Pod->GetMuzzleForward().GetSafeNormal()) > 0.95f);
 
 	World->DestroyWorld(false);
 	return true;
@@ -303,6 +380,70 @@ bool FGPMinigunDestroysMissiles::RunTest(const FString& Parameters)
 	Armored->ApplyShipDamage(6.0f, nullptr, nullptr);
 	TestTrue(TEXT("armored hull barely scratched"), Armored->GetHealth() > HullBefore - 10.0f);
 	TestTrue(TEXT("armored hull did take a chip"), Armored->GetHealth() < HullBefore);
+
+	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPEnemyShipCrewsStations, "GalacticPirates.CrewAI.EnemyShipsCrewStations", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGPEnemyShipCrewsStations::RunTest(const FString& Parameters)
+{
+	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	if (!TestNotNull(TEXT("ship class"), ShipClass) || !TestNotNull(TEXT("character class"), CharacterClass))
+	{
+		return false;
+	}
+
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FURL URL;
+	World->InitializeActorsForPlay(URL, true);
+	World->BeginPlay();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AWalkableShip* PlayerShip = Cast<AWalkableShip>(World->SpawnActor<AActor>(ShipClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams));
+	AWalkableShip* EnemyShip = Cast<AWalkableShip>(World->SpawnActor<AActor>(ShipClass, FVector(7000.0f, 0.0f, 0.0f), FRotator::ZeroRotator, SpawnParams));
+	AGalacticPiratesCharacter* Human = Cast<AGalacticPiratesCharacter>(World->SpawnActor<AActor>(CharacterClass, FVector(0.0f, 0.0f, 120.0f), FRotator::ZeroRotator, SpawnParams));
+	if (!TestNotNull(TEXT("player ship"), PlayerShip) || !TestNotNull(TEXT("enemy ship"), EnemyShip) || !TestNotNull(TEXT("human"), Human))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+
+	if (PlayerShip->HoloPoi)
+	{
+		PlayerShip->HoloPoi->Kind = EHoloMapPoiKind::OwnShip;
+	}
+	if (!PlayerShip->HasActorBegunPlay()) { PlayerShip->DispatchBeginPlay(); }
+	if (!EnemyShip->HasActorBegunPlay()) { EnemyShip->DispatchBeginPlay(); }
+	if (!Human->HasActorBegunPlay()) { Human->DispatchBeginPlay(); }
+
+	Human->BoardShip(PlayerShip);
+	TestTrue(TEXT("player ship has a human"), PlayerShip->HasHumanCrew());
+	TestFalse(TEXT("enemy ship has no human"), EnemyShip->HasHumanCrew());
+
+	if (!TestNotNull(TEXT("crew AI"), EnemyShip->CrewAI))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+
+	EnemyShip->CrewAI->SpawnCrew();
+	TestEqual(TEXT("four crew spawned"), EnemyShip->CrewAI->GetCrewCount(), 4);
+	TestTrue(TEXT("AI is at the helm"), EnemyShip->GetCurrentPilot() && EnemyShip->GetCurrentPilot()->IsAiCrew());
+	TestTrue(TEXT("port gun is manned by AI"), EnemyShip->PortMinigun && EnemyShip->PortMinigun->GetGunner() && EnemyShip->PortMinigun->GetGunner()->IsAiCrew());
+	TestTrue(TEXT("starboard gun is manned by AI"), EnemyShip->StarboardMinigun && EnemyShip->StarboardMinigun->GetGunner() && EnemyShip->StarboardMinigun->GetGunner()->IsAiCrew());
+	TestFalse(TEXT("orbit AI still treats this as an AI ship"), EnemyShip->HasHumanCrew());
+
+	if (EnemyShip->PortMinigun)
+	{
+		EnemyShip->PortMinigun->AimAtWorldLocation(PlayerShip->GetActorLocation());
+		const FVector ToPlayer = (PlayerShip->GetActorLocation() - EnemyShip->PortMinigun->GetMuzzleLocation()).GetSafeNormal();
+		TestTrue(TEXT("port gun points at the player ship"),
+			FVector::DotProduct(EnemyShip->PortMinigun->GetMuzzleForward(), ToPlayer) > 0.85f);
+	}
 
 	World->DestroyWorld(false);
 	return true;

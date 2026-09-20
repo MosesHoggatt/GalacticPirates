@@ -15,6 +15,7 @@ class UMinigunPodComponent;
 class UHolographicMapTableComponent;
 class UHoloMapPoiComponent;
 class UShipOrbitAiComponent;
+class UShipCrewAiComponent;
 class UBoxComponent;
 class AGalacticPiratesCharacter;
 class UWorld;
@@ -112,6 +113,9 @@ public:
 	UShipOrbitAiComponent* OrbitAI;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UShipCrewAiComponent* CrewAI;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	UBoxComponent* CombatHull;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
@@ -161,6 +165,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	const TArray<AGalacticPiratesCharacter*>& GetPlayersAboard() const { return PlayersAboard; }
+
+	UFUNCTION(BlueprintPure, Category = "Ship")
+	bool HasHumanCrew() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	UStaticMeshComponent* GetInteriorMesh() const { return InteriorMesh; }

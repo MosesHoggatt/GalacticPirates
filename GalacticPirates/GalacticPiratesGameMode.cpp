@@ -4,6 +4,8 @@
 #include "GalacticPiratesCharacter.h"
 #include "GalacticPirates.h"
 #include "WalkableShip.h"
+#include "HoloMapPoiComponent.h"
+#include "HoloMapTypes.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Engine/EngineTypes.h"
@@ -89,6 +91,10 @@ AWalkableShip* AGalacticPiratesGameMode::GetOrSpawnPersistentShip()
 
 	if (AWalkableShip* Existing = AWalkableShip::FindPersistentShip(World))
 	{
+		if (Existing->HoloPoi)
+		{
+			Existing->HoloPoi->Kind = EHoloMapPoiKind::OwnShip;
+		}
 		return Existing;
 	}
 
@@ -106,6 +112,10 @@ AWalkableShip* AGalacticPiratesGameMode::GetOrSpawnPersistentShip()
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	AWalkableShip* Spawned = World->SpawnActor<AWalkableShip>(ShipClass, FTransform::Identity, Params);
+	if (Spawned && Spawned->HoloPoi)
+	{
+		Spawned->HoloPoi->Kind = EHoloMapPoiKind::OwnShip;
+	}
 	UE_LOG(LogGalacticPirates, Warning, TEXT("[DedicatedNet] Spawned persistent walkable ship %s"), *GetNameSafe(Spawned));
 	return Spawned;
 }

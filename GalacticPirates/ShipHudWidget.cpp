@@ -31,11 +31,11 @@ TSharedRef<SWidget> UShipHudWidget::BuildCrosshair()
 {
 	CrosshairStrokes.Reset();
 
-	auto MakeStroke = [this](float Width, float Height)
+	auto MakeStroke = [this](float Width, float Height, const FLinearColor& Color)
 	{
 		TSharedRef<SBorder> Stroke = SNew(SBorder)
 			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-			.BorderBackgroundColor(FLinearColor(0.55f, 0.95f, 1.0f, 0.85f));
+			.BorderBackgroundColor(Color);
 		CrosshairStrokes.Add(Stroke);
 
 		return SNew(SBox)
@@ -46,21 +46,22 @@ TSharedRef<SWidget> UShipHudWidget::BuildCrosshair()
 			];
 	};
 
+	const FLinearColor Fill(0.95f, 0.98f, 1.0f, 1.0f);
 	return SNew(SBox)
-		.WidthOverride(64.0f)
-		.HeightOverride(64.0f)
+		.WidthOverride(96.0f)
+		.HeightOverride(96.0f)
 		[
 			SNew(SOverlay)
-			+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top)
-			[ MakeStroke(2.0f, 18.0f) ]
-			+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Bottom)
-			[ MakeStroke(2.0f, 18.0f) ]
-			+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Center)
-			[ MakeStroke(18.0f, 2.0f) ]
-			+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Center)
-			[ MakeStroke(18.0f, 2.0f) ]
+			+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(FMargin(0.0f, 6.0f, 0.0f, 0.0f))
+			[ MakeStroke(4.0f, 28.0f, Fill) ]
+			+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Bottom).Padding(FMargin(0.0f, 0.0f, 0.0f, 6.0f))
+			[ MakeStroke(4.0f, 28.0f, Fill) ]
+			+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Center).Padding(FMargin(6.0f, 0.0f, 0.0f, 0.0f))
+			[ MakeStroke(28.0f, 4.0f, Fill) ]
+			+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(FMargin(0.0f, 0.0f, 6.0f, 0.0f))
+			[ MakeStroke(28.0f, 4.0f, Fill) ]
 			+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center)
-			[ MakeStroke(3.0f, 3.0f) ]
+			[ MakeStroke(6.0f, 6.0f, Fill) ]
 		];
 }
 
@@ -177,12 +178,12 @@ void UShipHudWidget::RefreshFromPawn()
 	UMinigunPodComponent* Minigun = Character ? Character->GetOccupiedMinigun() : nullptr;
 	if (Crosshair.IsValid())
 	{
-		const bool bShowCrosshair = Minigun != nullptr && Ship && !Ship->IsWrecked();
+		const bool bShowCrosshair = Minigun != nullptr;
 		Crosshair->SetVisibility(bShowCrosshair ? EVisibility::HitTestInvisible : EVisibility::Collapsed);
 
 		const FLinearColor StrokeColor = (Minigun && Minigun->IsFiring())
-			? FLinearColor(1.0f, 0.72f, 0.25f, 1.0f)
-			: FLinearColor(0.55f, 0.95f, 1.0f, 0.85f);
+			? FLinearColor(1.0f, 0.78f, 0.18f, 1.0f)
+			: FLinearColor(0.95f, 0.98f, 1.0f, 1.0f);
 		for (const TSharedPtr<SBorder>& Stroke : CrosshairStrokes)
 		{
 			if (Stroke.IsValid())

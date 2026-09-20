@@ -73,13 +73,31 @@ public:
 	TObjectPtr<UStaticMeshComponent> TracerMesh;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> TracerRibbon;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> ImpactFlashMesh;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UPointLightComponent> MuzzleLight;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UPointLightComponent> ImpactLight;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UStaticMeshComponent>> SparkMeshes;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Minigun|Fx", meta = (ClampMin = "0.005"))
+	float MuzzleFlashSeconds = 0.018f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Minigun|Fx", meta = (ClampMin = "0.01"))
-	float MuzzleFlashSeconds = 0.05f;
+	float TracerSeconds = 0.18f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Minigun|Fx", meta = (ClampMin = "100.0"))
+	float TracerVisibleLength = 2400.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Minigun|Fx")
+	FVector GunSightOffset = FVector(-90.0f, 0.0f, 42.0f);
 
 	UFUNCTION(BlueprintCallable, Category = "Minigun")
 	bool TryInteract(AGalacticPiratesCharacter* Character);
@@ -103,6 +121,8 @@ public:
 	void AddAimInput(float YawDelta, float PitchDelta);
 	void SetFiring(bool bNewFiring);
 	void ApplyAim(float NewYaw, float NewPitch);
+	void AimAtWorldLocation(const FVector& WorldLocation);
+	void ApplyGunnerCamera();
 	FVector GetMuzzleLocation() const;
 	FVector GetMuzzleForward() const;
 
@@ -137,7 +157,10 @@ private:
 	bool bFiring = false;
 	float FireTimer = 0.0f;
 	float FlashTimer = 0.0f;
+	float TracerTimer = 0.0f;
 	int32 ShotsPlayed = 0;
+	TArray<FVector> SparkVelocity;
+	TArray<float> SparkLife;
 
 	void BuildRig();
 	void Occupy(AGalacticPiratesCharacter* Character);
@@ -147,4 +170,8 @@ private:
 	void ApplyMountRotation();
 	void FireTrace();
 	float DamageForActor(AActor* HitActor) const;
+	void PlaceTracer(const FVector& Start, const FVector& End);
+	void SpawnImpactSparks(const FVector& ImpactPoint, const FVector& IncomingDir);
+	void TickSparks(float DeltaTime);
+	void HideMuzzleFlash();
 };

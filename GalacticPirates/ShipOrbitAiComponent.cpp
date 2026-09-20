@@ -43,7 +43,7 @@ AWalkableShip* UShipOrbitAiComponent::FindOrbitTarget() const
 			continue;
 		}
 
-		if (Candidate->GetPlayersAboard().Num() <= 0 && Candidate->GetCurrentPilot() == nullptr)
+		if (!Candidate->HasHumanCrew())
 		{
 			continue;
 		}
@@ -117,7 +117,7 @@ void UShipOrbitAiComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 		return;
 	}
 
-	if (OwningShip->GetCurrentPilot() != nullptr || OwningShip->GetPlayersAboard().Num() > 0)
+	if (OwningShip->HasHumanCrew())
 	{
 		return;
 	}

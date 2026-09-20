@@ -45,6 +45,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
 	void ResetOrientation();
 
+	/** Skip local yaw/pitch and leave world transform to an external owner (minigun sight). */
+	void SetGunSightLock(bool bLocked);
+
 	UFUNCTION(BlueprintCallable, Category = "Quaternion Camera")
 	FVector GetPlanarLookForward() const;
 
@@ -60,6 +63,7 @@ private:
 	float LocalYaw;
 	float LocalPitch;
 	FQuat LastComputedWorldRotation;
+	bool bGunSightLock = false;
 
 	void UpdateReferenceFrame(float DeltaTime);
 	FQuat ComputeWorldRotation() const;

@@ -93,6 +93,9 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_OccupiedMinigun, BlueprintReadOnly, Category = "Ship")
 	TObjectPtr<UMinigunPodComponent> OccupiedMinigun;
 
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Ship")
+	bool bIsAiCrew = false;
+
 	/** Rate at which pilot input is sent over the network */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Ship", meta = (ClampMin = "10.0", ClampMax = "60.0"))
 	float PilotInputSendRate = 30.0f;
@@ -115,6 +118,11 @@ public:
 	AWalkableShip* GetBoardedShip() const { return BoardedShip; }
 
 	/** Returns if the character is currently piloting a ship */
+	UFUNCTION(BlueprintCallable, Category = "Ship")
+	bool IsAiCrew() const { return bIsAiCrew; }
+
+	void SetAiCrew(bool bNewAiCrew);
+
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	bool IsPiloting() const { return bIsPiloting; }
 
@@ -148,6 +156,7 @@ public:
 	FVector2D GetDebugLastLookInput() const { return DebugLastLookInput; }
 
 	void RestoreWalkingOnShip();
+	void RestoreWalkCamera();
 
 	void DumpShipDebugSnapshot(const TCHAR* Reason) const;
 	void StartAutomatedShipPlaytest();

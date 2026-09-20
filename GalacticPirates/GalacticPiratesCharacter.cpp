@@ -102,6 +102,7 @@ void AGalacticPiratesCharacter::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 	DOREPLIFETIME(AGalacticPiratesCharacter, BoardedShip);
 	DOREPLIFETIME(AGalacticPiratesCharacter, bIsPiloting);
 	DOREPLIFETIME(AGalacticPiratesCharacter, OccupiedMinigun);
+	DOREPLIFETIME(AGalacticPiratesCharacter, bIsAiCrew);
 }
 
 void AGalacticPiratesCharacter::BeginPlay()
@@ -422,6 +423,15 @@ void AGalacticPiratesCharacter::LeaveShip()
 	OnRep_BoardedShip();
 }
 
+void AGalacticPiratesCharacter::SetAiCrew(bool bNewAiCrew)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	bIsAiCrew = bNewAiCrew;
+}
+
 void AGalacticPiratesCharacter::SetPiloting(bool bNewPiloting)
 {
 	if (HasAuthority())
@@ -548,9 +558,17 @@ void AGalacticPiratesCharacter::OnRep_OccupiedMinigun()
 		}
 	}
 
-	if (!OccupiedMinigun && !bIsPiloting)
+	if (OccupiedMinigun)
 	{
-		SetupMovementBaseOnShip();
+		OccupiedMinigun->ApplyGunnerCamera();
+	}
+	else
+	{
+		RestoreWalkCamera();
+		if (!bIsPiloting)
+		{
+			SetupMovementBaseOnShip();
+		}
 	}
 }
 
@@ -655,6 +673,22 @@ void AGalacticPiratesCharacter::RestoreWalkingOnShip()
 
 	SetupMovementBaseOnShip();
 	TimeOffShipDeck = 0.0f;
+}
+
+void AGalacticPiratesCharacter::RestoreWalkCamera()
+{
+	if (!QuatCameraComponent)
+	{
+		return;
+	}
+
+	QuatCameraComponent->SetGunSightLock(false);
+	if (FirstPersonMesh)
+	{
+		FirstPersonMesh->SetVisibility(true, true);
+		QuatCameraComponent->AttachToComponent(FirstPersonMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, FName("head"));
+		QuatCameraComponent->SetRelativeLocationAndRotation(FVector(-2.8f, 5.89f, 0.0f), FRotator(0.0f, 90.0f, -90.0f));
+	}
 }
 
 void AGalacticPiratesCharacter::TickBoardedWalkPhysics(float DeltaTime)
