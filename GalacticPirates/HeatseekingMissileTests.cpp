@@ -208,6 +208,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPMinigunShotHasFeedback, "GalacticPirates.Min
 
 bool FGPMinigunShotHasFeedback::RunTest(const FString& Parameters)
 {
+	// The game spawns the blueprint, not the raw C++ class, so test what the player actually flies.
+	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	if (!TestNotNull(TEXT("debug ship blueprint"), ShipClass))
+	{
+		return false;
+	}
+
 	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
 	FURL URL;
 	World->InitializeActorsForPlay(URL, true);
@@ -215,13 +222,36 @@ bool FGPMinigunShotHasFeedback::RunTest(const FString& Parameters)
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	AWalkableShip* Ship = Cast<AWalkableShip>(World->SpawnActor<AActor>(ShipClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams));
 	UMinigunPodComponent* Pod = Ship ? Ship->PortMinigun : nullptr;
 	if (!TestNotNull(TEXT("pod"), Pod))
 	{
 		World->DestroyWorld(false);
 		return false;
 	}
+
+	if (!Ship->HasActorBegunPlay())
+	{
+		Ship->DispatchBeginPlay();
+	}
+
+	// A stale blueprint leaves new C++ subobjects owned by the CDO instead of the spawned actor.
+	USceneComponent* FxParts[] = { Pod->MuzzleFlashMesh, Pod->TracerMesh, Pod->ImpactFlashMesh, Pod->MuzzleLight };
+	for (USceneComponent* Part : FxParts)
+	{
+		if (!TestNotNull(TEXT("fx component exists"), Part))
+		{
+			World->DestroyWorld(false);
+			return false;
+		}
+		TestTrue(FString::Printf(TEXT("%s belongs to the spawned ship"), *Part->GetName()), Part->GetOwner() == Ship);
+		TestTrue(FString::Printf(TEXT("%s is registered"), *Part->GetName()), Part->IsRegistered());
+		TestNotNull(FString::Printf(TEXT("%s has an attach parent"), *Part->GetName()), Part->GetAttachParent());
+	}
+	TestTrue(TEXT("muzzle flash rides the pitch mount"), Pod->MuzzleFlashMesh->GetAttachParent() == Pod->PitchMount);
+	TestTrue(TEXT("muzzle flash has a mesh"), Pod->MuzzleFlashMesh->GetStaticMesh() != nullptr);
+	TestTrue(TEXT("tracer has a mesh"), Pod->TracerMesh->GetStaticMesh() != nullptr);
+	TestTrue(TEXT("muzzle flash has a material"), Pod->MuzzleFlashMesh->GetMaterial(0) != nullptr);
 
 	Pod->PlayShotFx(Pod->GetMuzzleLocation(), Pod->GetMuzzleLocation() + Pod->GetMuzzleForward() * 5000.0f, true);
 	TestTrue(TEXT("muzzle flash is visible"), Pod->MuzzleFlashMesh && Pod->MuzzleFlashMesh->IsVisible());

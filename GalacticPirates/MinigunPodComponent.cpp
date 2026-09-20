@@ -12,7 +12,6 @@
 #include "Engine/World.h"
 #include "DrawDebugHelpers.h"
 #include "CollisionQueryParams.h"
-#include "UObject/ConstructorHelpers.h"
 #include "Interfaces/MovementBaseInterface.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -22,77 +21,107 @@ UMinigunPodComponent::UMinigunPodComponent()
 	SetIsReplicatedByDefault(true);
 	SetMobility(EComponentMobility::Movable);
 
-	PodMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PodMesh"));
-	PodMesh->SetupAttachment(this);
-	PodMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -20.0f));
-	PodMesh->SetRelativeScale3D(FVector(1.6f, 1.6f, 0.35f));
-	PodMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	PodMesh->SetCastShadow(false);
+	// The gun rig is built in BuildRig() at BeginPlay, not here. Default subobjects created
+	// inside a component constructor cannot be instanced on a blueprint-derived actor: the
+	// children end up owned by the CDO and refuse to attach ("Template Mismatch").
+}
 
-	YawMount = CreateDefaultSubobject<USceneComponent>(TEXT("YawMount"));
-	YawMount->SetupAttachment(this);
+void UMinigunPodComponent::BuildRig()
+{
+	AActor* Owner = GetOwner();
+	if (bRigBuilt || !Owner)
+	{
+		return;
+	}
+	bRigBuilt = true;
+
+	// A blueprint saved against the old constructor still hands us its own copies of these
+	// components, empty and misparented. Throw those away before building the real rig.
+	USceneComponent* Inherited[] = { YawMount, PitchMount, PodMesh, BarrelMesh, MuzzleFlashMesh, TracerMesh, ImpactFlashMesh, MuzzleLight };
+	for (USceneComponent* Stale : Inherited)
+	{
+		if (Stale && Stale->GetOwner() == Owner)
+		{
+			Stale->DestroyComponent();
+		}
+	}
+	YawMount = nullptr;
+	PitchMount = nullptr;
+	PodMesh = nullptr;
+	BarrelMesh = nullptr;
+	MuzzleFlashMesh = nullptr;
+	TracerMesh = nullptr;
+	ImpactFlashMesh = nullptr;
+	MuzzleLight = nullptr;
+
+	auto NameFor = [this](const TCHAR* Suffix)
+	{
+		return FName(*FString::Printf(TEXT("%s_%s"), *GetName(), Suffix));
+	};
+
+	auto Attach = [](USceneComponent* Component, USceneComponent* Parent)
+	{
+		Component->SetMobility(EComponentMobility::Movable);
+		Component->RegisterComponent();
+		Component->AttachToComponent(Parent, FAttachmentTransformRules::KeepRelativeTransform);
+	};
+
+	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UStaticMesh* CylinderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+
+	auto MakeMesh = [&](const TCHAR* Suffix, USceneComponent* Parent, UStaticMesh* Mesh)
+	{
+		UStaticMeshComponent* Component = NewObject<UStaticMeshComponent>(Owner, NameFor(Suffix));
+		Component->SetStaticMesh(Mesh);
+		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Component->SetCastShadow(false);
+		Attach(Component, Parent);
+		return Component;
+	};
+
+	YawMount = NewObject<USceneComponent>(Owner, NameFor(TEXT("YawMount")));
+	Attach(YawMount, this);
 	YawMount->SetRelativeLocation(FVector(0.0f, 0.0f, 40.0f));
 
-	PitchMount = CreateDefaultSubobject<USceneComponent>(TEXT("PitchMount"));
-	PitchMount->SetupAttachment(YawMount);
+	PitchMount = NewObject<USceneComponent>(Owner, NameFor(TEXT("PitchMount")));
+	Attach(PitchMount, YawMount);
 
-	BarrelMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BarrelMesh"));
-	BarrelMesh->SetupAttachment(PitchMount);
+	PodMesh = MakeMesh(TEXT("PodMesh"), this, CubeMesh);
+	PodMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -20.0f));
+	PodMesh->SetRelativeScale3D(FVector(1.6f, 1.6f, 0.35f));
+
+	BarrelMesh = MakeMesh(TEXT("BarrelMesh"), PitchMount, CylinderMesh);
 	BarrelMesh->SetRelativeLocation(FVector(90.0f, 0.0f, 0.0f));
+	BarrelMesh->SetRelativeRotation(FRotator(0.0f, 0.0f, 90.0f));
 	BarrelMesh->SetRelativeScale3D(FVector(2.2f, 0.22f, 0.22f));
-	BarrelMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	BarrelMesh->SetCastShadow(false);
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube"));
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CylinderMesh(TEXT("/Engine/BasicShapes/Cylinder"));
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereMesh(TEXT("/Engine/BasicShapes/Sphere"));
-	if (CubeMesh.Succeeded())
-	{
-		PodMesh->SetStaticMesh(CubeMesh.Object);
-	}
-	if (CylinderMesh.Succeeded())
-	{
-		BarrelMesh->SetStaticMesh(CylinderMesh.Object);
-		BarrelMesh->SetRelativeRotation(FRotator(0.0f, 0.0f, 90.0f));
-	}
-
-	MuzzleFlashMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MuzzleFlashMesh"));
-	MuzzleFlashMesh->SetupAttachment(PitchMount);
+	MuzzleFlashMesh = MakeMesh(TEXT("MuzzleFlashMesh"), PitchMount, SphereMesh);
 	MuzzleFlashMesh->SetRelativeLocation(FVector(190.0f, 0.0f, 0.0f));
 	MuzzleFlashMesh->SetRelativeScale3D(FVector(0.55f, 0.35f, 0.35f));
-	MuzzleFlashMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	MuzzleFlashMesh->SetCastShadow(false);
 	MuzzleFlashMesh->SetVisibility(false);
-	MuzzleFlashMesh->SetStaticMesh(SphereMesh.Succeeded() ? SphereMesh.Object : nullptr);
 
-	ImpactFlashMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ImpactFlashMesh"));
-	ImpactFlashMesh->SetupAttachment(this);
+	ImpactFlashMesh = MakeMesh(TEXT("ImpactFlashMesh"), this, SphereMesh);
 	ImpactFlashMesh->SetRelativeScale3D(FVector(0.9f));
-	ImpactFlashMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	ImpactFlashMesh->SetCastShadow(false);
 	ImpactFlashMesh->SetVisibility(false);
-	ImpactFlashMesh->SetStaticMesh(SphereMesh.Succeeded() ? SphereMesh.Object : nullptr);
 
-	TracerMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("TracerMesh"));
-	TracerMesh->SetupAttachment(this);
-	TracerMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	TracerMesh->SetCastShadow(false);
+	TracerMesh = MakeMesh(TEXT("TracerMesh"), this, CylinderMesh);
 	TracerMesh->SetVisibility(false);
-	TracerMesh->SetStaticMesh(CylinderMesh.Succeeded() ? CylinderMesh.Object : nullptr);
 
-	MuzzleLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("MuzzleLight"));
-	MuzzleLight->SetupAttachment(PitchMount);
-	MuzzleLight->SetRelativeLocation(FVector(190.0f, 0.0f, 0.0f));
+	MuzzleLight = NewObject<UPointLightComponent>(Owner, NameFor(TEXT("MuzzleLight")));
 	MuzzleLight->SetAttenuationRadius(900.0f);
 	MuzzleLight->SetLightColor(FLinearColor(1.0f, 0.72f, 0.28f));
 	MuzzleLight->SetIntensity(0.0f);
 	MuzzleLight->SetCastShadows(false);
+	Attach(MuzzleLight, PitchMount);
+	MuzzleLight->SetRelativeLocation(FVector(190.0f, 0.0f, 0.0f));
 }
 
 void UMinigunPodComponent::BeginPlay()
 {
 	Super::BeginPlay();
 	OwningShip = Cast<AWalkableShip>(GetOwner());
+	BuildRig();
 	GPApplyPolishVfxMaterial(PodMesh, TEXT("circle_05"), FLinearColor(0.25f, 0.28f, 0.32f, 1.0f));
 	GPApplyPolishVfxMaterial(BarrelMesh, TEXT("circle_05"), FLinearColor(0.55f, 0.45f, 0.2f, 1.0f));
 	GPApplyPolishVfxMaterial(MuzzleFlashMesh, TEXT("muzzle_01"), FLinearColor(6.0f, 3.4f, 1.1f, 1.0f));

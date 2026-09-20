@@ -96,6 +96,9 @@ private:
 
 	UStaticMesh* LoadPrimitiveMesh(EHoloMapPrimitive Primitive) const;
 	UStaticMeshComponent* GetOrCreatePooledMesh(TArray<TObjectPtr<UStaticMeshComponent>>& Pool, int32 Index);
+	void BuildRig();
+
+	bool bRigBuilt = false;
 	void TintMarker(UStaticMeshComponent* Mesh, const FLinearColor& Color) const;
 	FVector WorldOffsetToVolume(const FVector& ShipLocalOffset) const;
 	FVector GetActorSizeCm(const AActor* Actor) const;

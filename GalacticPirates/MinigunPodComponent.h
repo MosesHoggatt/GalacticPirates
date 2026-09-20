@@ -133,11 +133,13 @@ private:
 	UPROPERTY()
 	TObjectPtr<AWalkableShip> OwningShip;
 
+	bool bRigBuilt = false;
 	bool bFiring = false;
 	float FireTimer = 0.0f;
 	float FlashTimer = 0.0f;
 	int32 ShotsPlayed = 0;
 
+	void BuildRig();
 	void Occupy(AGalacticPiratesCharacter* Character);
 	void Vacate();
 	void LockGunner(AGalacticPiratesCharacter* Character);

@@ -37,20 +37,45 @@ UHolographicMapTableComponent::UHolographicMapTableComponent()
 	PrimaryComponentTick.bStartWithTickEnabled = true;
 	SetMobility(EComponentMobility::Movable);
 
+	// Children are built in BuildRig() at BeginPlay. Default subobjects made inside a
+	// component constructor cannot be instanced on a blueprint-derived actor.
+}
+
+void UHolographicMapTableComponent::BuildRig()
+{
+	AActor* Owner = GetOwner();
+	if (bRigBuilt || !Owner)
+	{
+		return;
+	}
+	bRigBuilt = true;
+
+	// A blueprint saved against the old constructor hands us its own loose copies of these.
+	USceneComponent* Stale[] = { TableMesh, HoloVolumeMesh, OwnShipMarker, HoloLight, EquatorRing, MeridianRing, TransverseRing };
+	for (USceneComponent* Old : Stale)
+	{
+		if (Old && Old->GetOwner() == Owner)
+		{
+			Old->DestroyComponent();
+		}
+	}
+
+	auto NameFor = [this](const TCHAR* Suffix)
+	{
+		return FName(*FString::Printf(TEXT("%s_%s"), *GetName(), Suffix));
+	};
+
 	auto InitChild = [this](USceneComponent* Child)
 	{
-		if (!Child)
-		{
-			return;
-		}
 		Child->SetMobility(EComponentMobility::Movable);
 		Child->SetUsingAbsoluteLocation(false);
 		Child->SetUsingAbsoluteRotation(false);
 		Child->SetUsingAbsoluteScale(false);
-		Child->SetupAttachment(this);
+		Child->RegisterComponent();
+		Child->AttachToComponent(this, FAttachmentTransformRules::KeepRelativeTransform);
 	};
 
-	TableMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("TableMesh"));
+	TableMesh = NewObject<UStaticMeshComponent>(Owner, NameFor(TEXT("TableMesh")));
 	InitChild(TableMesh);
 	TableMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	TableMesh->SetCollisionObjectType(ECC_WorldDynamic);
@@ -60,21 +85,21 @@ UHolographicMapTableComponent::UHolographicMapTableComponent()
 	TableMesh->SetRelativeScale3D(FVector(2.4f, 2.4f, 1.32f));
 	TableMesh->SetCastShadow(true);
 
-	OwnShipMarker = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("OwnShipMarker"));
+	OwnShipMarker = NewObject<UStaticMeshComponent>(Owner, NameFor(TEXT("OwnShipMarker")));
 	InitChild(OwnShipMarker);
 	OwnShipMarker->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	OwnShipMarker->SetRelativeLocation(FVector(0.0f, 0.0f, VolumeCenterZ));
 	OwnShipMarker->SetRelativeScale3D(FVector(0.42f, 0.42f, 0.42f));
 	OwnShipMarker->SetCastShadow(false);
 
-	HoloVolumeMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("HoloVolumeMesh"));
+	HoloVolumeMesh = NewObject<UStaticMeshComponent>(Owner, NameFor(TEXT("HoloVolumeMesh")));
 	InitChild(HoloVolumeMesh);
 	HoloVolumeMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	HoloVolumeMesh->SetCastShadow(false);
 	HoloVolumeMesh->SetVisibility(false);
 	HoloVolumeMesh->SetHiddenInGame(true);
 
-	HoloLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("HoloLight"));
+	HoloLight = NewObject<UPointLightComponent>(Owner, NameFor(TEXT("HoloLight")));
 	InitChild(HoloLight);
 	HoloLight->SetRelativeLocation(FVector(0.0f, 0.0f, VolumeCenterZ));
 	HoloLight->SetIntensity(1200.0f);
@@ -83,18 +108,17 @@ UHolographicMapTableComponent::UHolographicMapTableComponent()
 	HoloLight->SetCastShadows(false);
 	HoloLight->bUseInverseSquaredFalloff = false;
 
-	EquatorRing = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("EquatorRing"));
+	EquatorRing = NewObject<UStaticMeshComponent>(Owner, NameFor(TEXT("EquatorRing")));
 	InitChild(EquatorRing);
-	MeridianRing = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MeridianRing"));
+	MeridianRing = NewObject<UStaticMeshComponent>(Owner, NameFor(TEXT("MeridianRing")));
 	InitChild(MeridianRing);
-	TransverseRing = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("TransverseRing"));
+	TransverseRing = NewObject<UStaticMeshComponent>(Owner, NameFor(TEXT("TransverseRing")));
 	InitChild(TransverseRing);
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube"));
-	if (CubeMesh.Succeeded())
+	if (UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")))
 	{
-		TableMesh->SetStaticMesh(CubeMesh.Object);
-		OwnShipMarker->SetStaticMesh(CubeMesh.Object);
+		TableMesh->SetStaticMesh(CubeMesh);
+		OwnShipMarker->SetStaticMesh(CubeMesh);
 	}
 	HideCylinderMesh(EquatorRing);
 	HideCylinderMesh(MeridianRing);
@@ -110,6 +134,7 @@ void UHolographicMapTableComponent::OnRegister()
 void UHolographicMapTableComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	BuildRig();
 	ScanRangeCm = GPHoloMapScanRangeCm();
 	ResolveOwningShip();
 	PlaceInCabin();
