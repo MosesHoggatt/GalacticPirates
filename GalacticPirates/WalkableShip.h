@@ -25,6 +25,7 @@ class UPointLightComponent;
 class UHullHealthComponent;
 class UWeaponHardpointComponent;
 class UOccupancyComponent;
+class ABulldogFighter;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnShipRotationChanged, const FQuat&, NewRotation);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPilotChanged, AGalacticPiratesCharacter*, NewPilot, AGalacticPiratesCharacter*, OldPilot);
@@ -41,6 +42,21 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	USceneComponent* ShipRoot;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	USceneComponent* HangarDock;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Hangar")
+	UStaticMeshComponent* HangarPad;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Hangar")
+	UStaticMeshComponent* HangarNeck;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Hangar")
+	UStaticMeshComponent* HangarPortRail;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Hangar")
+	UStaticMeshComponent* HangarStarboardRail;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	UStaticMeshComponent* HullMesh;
@@ -132,6 +148,19 @@ public:
 	static constexpr float PodBubbleCenterZ = 120.0f;
 	static constexpr float PodDoorwayCenterX = -100.0f;
 	static constexpr float PodDoorwayWidth = 300.0f;
+	static constexpr float HangarDoorwayWidth = 520.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Hangar")
+	UStaticMeshComponent* AftHangarFillPortLower;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Hangar")
+	UStaticMeshComponent* AftHangarFillPortUpper;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Hangar")
+	UStaticMeshComponent* AftHangarFillStarboardLower;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components|Hangar")
+	UStaticMeshComponent* AftHangarFillStarboardUpper;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	UHolographicMapTableComponent* MapTable;
@@ -280,6 +309,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ship")
 	bool TryStationInteract(AGalacticPiratesCharacter* Character);
 
+	UFUNCTION(BlueprintPure, Category = "Ship|Hangar")
+	ABulldogFighter* FindHangarFighter() const;
+
 	UFUNCTION(BlueprintPure, Category = "Ship")
 	FText GetInteractPrompt(AGalacticPiratesCharacter* Character) const;
 
@@ -325,6 +357,8 @@ private:
 
 	/** Splits the hull side walls so each gun pod has a walk-through doorway. */
 	void CarveGunPodDoorways();
+	/** Splits the aft hull wall and parks HangarDock just outside the opening. */
+	void CarveAftHangarDoorway();
 	void TriggerInteriorAlarm();
 	void TickInteriorAlarm(float DeltaTime);
 	void ApplyAlarmLightFlash(float IntensityScale);

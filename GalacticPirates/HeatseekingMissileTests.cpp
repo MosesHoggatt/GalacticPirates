@@ -6,6 +6,7 @@
 #include "HoloMapTypes.h"
 #include "HolographicMapTableComponent.h"
 #include "MinigunPodComponent.h"
+#include "MinigunMuzzleComponent.h"
 #include "CombatTypes.h"
 #include "HullHealthComponent.h"
 #include "ShipCrewAiComponent.h"
@@ -26,6 +27,7 @@
 #include "Components/PointLightComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Engine/EngineTypes.h"
 #include "Misc/AutomationTest.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "ShipMovementComponent.h"
@@ -161,6 +163,17 @@ bool FGPMinigunPodsOnWalkableShip::RunTest(const FString& Parameters)
 	TestTrue(TEXT("walkable ships default armored"), Ship->ArmorClass == EShipArmorClass::Armored);
 	TestTrue(TEXT("armored chip damage is small"), Ship->PortMinigun->ArmoredShipDamage < 15.0f);
 	TestTrue(TEXT("missile damage exceeds missile health"), Ship->PortMinigun->MissileDamage > 0.15f * 18.0f);
+
+	if (!Ship->HasActorBegunPlay())
+	{
+		Ship->DispatchBeginPlay();
+	}
+	TestTrue(TEXT("port occupancy stays the ship seat"), Ship->PortMinigun->Occupancy == Ship->PortGunOccupancy);
+	TestTrue(TEXT("starboard occupancy stays the ship seat"), Ship->StarboardMinigun->Occupancy == Ship->StarboardGunOccupancy);
+	TestTrue(TEXT("port gun seat still has a usable range"),
+		Ship->PortGunOccupancy && Ship->PortGunOccupancy->InteractRange >= 240.0f);
+	TestTrue(TEXT("starboard gun seat still has a usable range"),
+		Ship->StarboardGunOccupancy && Ship->StarboardGunOccupancy->InteractRange >= 240.0f);
 
 	World->DestroyWorld(false);
 	return true;
@@ -834,9 +847,9 @@ bool FGPAffiliationIsFriendOrFoeOnly::RunTest(const FString& Parameters)
 	TestTrue(TEXT("different tags are hostile"), GPAreHostile(Red, Blue));
 	TestTrue(TEXT("untagged is hostile to tagged"), GPAreHostile(Red, Untagged));
 	TestTrue(TEXT("two untagged crafts are hostile"), GPAreHostile(Untagged, OtherUntagged));
-	TestTrue(TEXT("home-craft fighter is still an enemy until deploy FOF exists"), GPAreHostile(Escort, Red));
+	TestFalse(TEXT("hangar fighter is friendly to its home ship"), GPAreHostile(Escort, Red));
 	TestTrue(TEXT("escort is hostile to the other tag"), GPAreHostile(Escort, Blue));
-	TestFalse(TEXT("deployed-fighter hook is unused"), GPIsOwnDeployedFighter(Red, Escort));
+	TestTrue(TEXT("deployed-fighter FOF matches hangar home"), GPIsOwnDeployedFighter(Red, Escort));
 
 	World->DestroyWorld(false);
 	return true;
@@ -1196,6 +1209,202 @@ bool FGPHoloMapEnemyPrimitives::RunTest(const FString& Parameters)
 	{
 		TestTrue(TEXT("displayed fighter marker uses the cone triangle mesh"), FighterMarker->GetStaticMesh() && FighterMarker->GetStaticMesh()->GetName().Contains(TEXT("Cone")));
 	}
+
+	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPBulldogStrafeWhizMissileAndGun, "GalacticPirates.Fighter.BulldogStrafeWhizMissileAndGun", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGPBulldogStrafeWhizMissileAndGun::RunTest(const FString& Parameters)
+{
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	if (!TestNotNull(TEXT("character class"), CharacterClass))
+	{
+		return false;
+	}
+
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FURL URL;
+	World->InitializeActorsForPlay(URL, true);
+	World->BeginPlay();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(FVector(4000.0f, 0.0f, 0.0f), FRotator::ZeroRotator, SpawnParams);
+	ABulldogFighter* Fighter = World->SpawnActor<ABulldogFighter>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	AGalacticPiratesCharacter* Crew = Cast<AGalacticPiratesCharacter>(World->SpawnActor<AActor>(CharacterClass, FVector(4000.0f, 0.0f, 80.0f), FRotator::ZeroRotator, SpawnParams));
+	if (!TestNotNull(TEXT("ship"), Ship) || !TestNotNull(TEXT("fighter"), Fighter) || !TestNotNull(TEXT("crew"), Crew))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+
+	if (!Ship->HasActorBegunPlay()) { Ship->DispatchBeginPlay(); }
+	if (!Fighter->HasActorBegunPlay()) { Fighter->DispatchBeginPlay(); }
+	if (!Crew->HasActorBegunPlay()) { Crew->DispatchBeginPlay(); }
+	Ship->RegisterPlayer(Crew);
+
+	TestTrue(TEXT("nose gun exists"), Fighter->NoseGun != nullptr);
+	TestTrue(TEXT("fighter does not spawn a gun pod"), Fighter->FindComponentByClass<UMinigunPodComponent>() == nullptr);
+	TestTrue(TEXT("occupied ship is the attack target"), Fighter->FindAttackTarget() == Ship);
+
+	const float HullBefore = Ship->GetHullHealth() ? Ship->GetHullHealth()->GetHealth() : 0.0f;
+	float Closest = TNumericLimits<float>::Max();
+	float PeakSpeed = 0.0f;
+	bool bLaunchedMissile = false;
+	for (int32 Step = 0; Step < 400; ++Step)
+	{
+		Fighter->TickActor(0.05f, LEVELTICK_All, Fighter->PrimaryActorTick);
+		if (Fighter->ShipMovement)
+		{
+			Fighter->ShipMovement->TickPhysics(0.05f);
+		}
+		if (Fighter->NoseGun && Fighter->NoseGun->IsFiring() && Fighter->GunHardpoint)
+		{
+			Fighter->GunHardpoint->TryFire(Fighter);
+		}
+		Closest = FMath::Min(Closest, FVector::Dist(Fighter->GetActorLocation(), Ship->GetActorLocation()));
+		PeakSpeed = FMath::Max(PeakSpeed, Fighter->GetCraftVelocity().Size());
+		bLaunchedMissile = bLaunchedMissile || Fighter->GetActiveMissile() != nullptr;
+	}
+
+	AddInfo(FString::Printf(TEXT("closest=%.0fcm peakSpeed=%.0fcm/s gun=%d missile=%s hull=%.0f->%.0f"),
+		Closest,
+		PeakSpeed,
+		Fighter->NoseGun && Fighter->NoseGun->IsFiring() ? 1 : 0,
+		*GetNameSafe(Fighter->GetActiveMissile()),
+		HullBefore,
+		Ship->GetHullHealth() ? Ship->GetHullHealth()->GetHealth() : 0.0f));
+
+	TestTrue(TEXT("strafe run gets close to the occupied ship"), Closest < 2500.0f);
+	TestTrue(TEXT("fighter reaches a zip-by speed"), PeakSpeed > 4000.0f);
+	TestTrue(TEXT("launches a missile on the close pass"), bLaunchedMissile);
+	const float HullAfter = Ship->GetHullHealth() ? Ship->GetHullHealth()->GetHealth() : 0.0f;
+	TestTrue(TEXT("minigun hits while aimed at the occupied ship"), HullAfter < HullBefore - 1.0f);
+
+	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPBulldogGunSilentWhenNotAimed, "GalacticPirates.Fighter.BulldogGunSilentWhenNotAimed", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGPBulldogGunSilentWhenNotAimed::RunTest(const FString& Parameters)
+{
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	if (!TestNotNull(TEXT("character class"), CharacterClass))
+	{
+		return false;
+	}
+
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FURL URL;
+	World->InitializeActorsForPlay(URL, true);
+	World->BeginPlay();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(FVector(0.0f, 5000.0f, 0.0f), FRotator::ZeroRotator, SpawnParams);
+	ABulldogFighter* Fighter = World->SpawnActor<ABulldogFighter>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	AGalacticPiratesCharacter* Crew = Cast<AGalacticPiratesCharacter>(World->SpawnActor<AActor>(CharacterClass, FVector(0.0f, 5000.0f, 80.0f), FRotator::ZeroRotator, SpawnParams));
+	if (!TestNotNull(TEXT("ship"), Ship) || !TestNotNull(TEXT("fighter"), Fighter) || !TestNotNull(TEXT("crew"), Crew))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+
+	if (!Ship->HasActorBegunPlay()) { Ship->DispatchBeginPlay(); }
+	if (!Fighter->HasActorBegunPlay()) { Fighter->DispatchBeginPlay(); }
+	if (!Crew->HasActorBegunPlay()) { Crew->DispatchBeginPlay(); }
+	Ship->RegisterPlayer(Crew);
+	Fighter->SetActorRotation(FRotator::ZeroRotator);
+
+	Fighter->TickActor(0.05f, LEVELTICK_All, Fighter->PrimaryActorTick);
+	TestTrue(TEXT("gun stays quiet when the nose is not aimed at the ship"), Fighter->NoseGun && !Fighter->NoseGun->IsFiring());
+
+	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPBulldogMapEdgeTurnAndStrafe, "GalacticPirates.Fighter.BulldogMapEdgeTurnAndStrafe", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGPBulldogMapEdgeTurnAndStrafe::RunTest(const FString& Parameters)
+{
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	if (!TestNotNull(TEXT("character class"), CharacterClass))
+	{
+		return false;
+	}
+
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FURL URL;
+	World->InitializeActorsForPlay(URL, true);
+	World->BeginPlay();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	ABulldogFighter* Fighter = World->SpawnActor<ABulldogFighter>(FVector(3000.0f, 0.0f, 0.0f), FRotator::ZeroRotator, SpawnParams);
+	AGalacticPiratesCharacter* Crew = Cast<AGalacticPiratesCharacter>(World->SpawnActor<AActor>(CharacterClass, FVector(0.0f, 0.0f, 80.0f), FRotator::ZeroRotator, SpawnParams));
+	if (!TestNotNull(TEXT("ship"), Ship) || !TestNotNull(TEXT("fighter"), Fighter) || !TestNotNull(TEXT("crew"), Crew))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+
+	if (!Ship->HasActorBegunPlay()) { Ship->DispatchBeginPlay(); }
+	if (!Fighter->HasActorBegunPlay()) { Fighter->DispatchBeginPlay(); }
+	if (!Crew->HasActorBegunPlay()) { Crew->DispatchBeginPlay(); }
+	Ship->RegisterPlayer(Crew);
+
+	const float MapRange = GPHoloMapScanRangeCm();
+	float MaxDist = 0.0f;
+	float MinAfterEdge = TNumericLimits<float>::Max();
+	bool bReachedEdge = false;
+	bool bSawTurn = false;
+	bool bSawStrafe = false;
+	bool bMissile = false;
+	const float HullBefore = Ship->GetHullHealth() ? Ship->GetHullHealth()->GetHealth() : 0.0f;
+
+	for (int32 Step = 0; Step < 400; ++Step)
+	{
+		Fighter->TickActor(0.05f, LEVELTICK_All, Fighter->PrimaryActorTick);
+		if (Fighter->ShipMovement)
+		{
+			Fighter->ShipMovement->TickPhysics(0.05f);
+		}
+		if (Fighter->NoseGun && Fighter->NoseGun->IsFiring() && Fighter->GunHardpoint)
+		{
+			Fighter->GunHardpoint->TryFire(Fighter);
+		}
+
+		const float Dist = FVector::Dist(Fighter->GetActorLocation(), Ship->GetActorLocation());
+		MaxDist = FMath::Max(MaxDist, Dist);
+		if (Dist >= MapRange * 0.88f)
+		{
+			bReachedEdge = true;
+		}
+		if (bReachedEdge)
+		{
+			MinAfterEdge = FMath::Min(MinAfterEdge, Dist);
+		}
+		bSawTurn = bSawTurn || Fighter->GetStrafePhase() == EBulldogStrafePhase::TurnIn;
+		bSawStrafe = bSawStrafe || Fighter->GetStrafePhase() == EBulldogStrafePhase::Strafe;
+		bMissile = bMissile || Fighter->GetActiveMissile() != nullptr;
+	}
+
+	const float HullAfter = Ship->GetHullHealth() ? Ship->GetHullHealth()->GetHealth() : 0.0f;
+	const bool bCameBack = bReachedEdge && MinAfterEdge < 3000.0f;
+	const bool bStayedInMap = MaxDist <= MapRange * 1.15f;
+	AddInfo(FString::Printf(TEXT("[BulldogMapStrafe] map=%.0f maxDist=%.0f minAfterEdge=%.0f reachedEdge=%d turn=%d strafe=%d cameBack=%d inMap=%d missile=%d hull=%.0f->%.0f"),
+		MapRange, MaxDist, MinAfterEdge, bReachedEdge ? 1 : 0, bSawTurn ? 1 : 0, bSawStrafe ? 1 : 0, bCameBack ? 1 : 0, bStayedInMap ? 1 : 0, bMissile ? 1 : 0, HullBefore, HullAfter));
+
+	TestTrue(TEXT("holomap range is 125m"), FMath::IsNearlyEqual(MapRange, 12500.0f));
+	TestTrue(TEXT("flew out to the holomap edge"), bReachedEdge);
+	TestTrue(TEXT("hard-turned at the edge"), bSawTurn);
+	TestTrue(TEXT("started an inbound strafe"), bSawStrafe);
+	TestTrue(TEXT("did not fly far past the holomap"), MaxDist <= MapRange * 1.20f);
+	TestTrue(TEXT("came back in for a strafe after the edge"), bCameBack);
 
 	World->DestroyWorld(false);
 	return true;

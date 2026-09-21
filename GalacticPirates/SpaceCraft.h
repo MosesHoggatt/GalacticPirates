@@ -72,13 +72,7 @@ inline FName GPResolvedAffiliation(AActor* Actor)
 	return NAME_None;
 }
 
-/** Own launched fighters. Unused until hangar deploy lands; keep the hook so map/FOF can stay friendly. */
-inline bool GPIsOwnDeployedFighter(AActor* Viewer, AActor* Other)
-{
-	(void)Viewer;
-	(void)Other;
-	return false;
-}
+bool GALACTICPIRATES_API GPIsOwnDeployedFighter(AActor* Viewer, AActor* Other);
 
 /** Friend/foe only. Never used for boarding or occupancy. Distinct craft are hostile until deployed-fighter FOF exists. */
 inline bool GPAreHostile(AActor* A, AActor* B)

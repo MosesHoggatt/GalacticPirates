@@ -44,6 +44,13 @@ void UShipMovementComponent::TickPhysics(float DeltaTime)
 		return;
 	}
 
+	if (GetOwner()->GetAttachParentActor())
+	{
+		LinearVelocity = FVector::ZeroVector;
+		AngularVelocity = FVector::ZeroVector;
+		return;
+	}
+
 	ApplyThrust(DeltaTime);
 	ApplyTorque(DeltaTime);
 	ApplyDampening(DeltaTime);

@@ -5,6 +5,8 @@
 #include "ShipDebug.h"
 #include "GalacticPiratesCharacter.h"
 #include "WalkableShip.h"
+#include "BulldogFighter.h"
+#include "SpaceCraft.h"
 #include "ShipMissileSalvoComponent.h"
 #include "GalacticPiratesHUD.h"
 #include "HoloMapPoiComponent.h"
@@ -17,6 +19,61 @@
 IMPLEMENT_PRIMARY_GAME_MODULE( FDefaultGameModuleImpl, GalacticPirates, "GalacticPirates" );
 
 DEFINE_LOG_CATEGORY(LogGalacticPirates);
+
+bool GPIsOwnDeployedFighter(AActor* Viewer, AActor* Other)
+{
+	auto AsFighter = [](AActor* Actor) -> ABulldogFighter*
+	{
+		return Cast<ABulldogFighter>(Actor);
+	};
+
+	ABulldogFighter* Fighter = AsFighter(Other);
+	AActor* ViewerSide = Viewer;
+	if (!Fighter)
+	{
+		Fighter = AsFighter(Viewer);
+		ViewerSide = Other;
+	}
+	if (!Fighter)
+	{
+		return false;
+	}
+
+	AActor* Home = Fighter->HomeCraft;
+	if (!Home || Home == Fighter)
+	{
+		return false;
+	}
+
+	if (Home != ViewerSide)
+	{
+		if (ISpaceCraft* ViewerCraft = GPAsSpaceCraft(ViewerSide))
+		{
+			if (ViewerCraft->GetHomeCraft() != Home && ViewerSide != Home)
+			{
+				return false;
+			}
+		}
+		else
+		{
+			return false;
+		}
+	}
+
+	if (Fighter->IsHullDocked())
+	{
+		return true;
+	}
+
+	const FName FighterTag = Fighter->GetAffiliationId();
+	ISpaceCraft* HomeCraft = GPAsSpaceCraft(Home);
+	const FName HomeTag = HomeCraft ? HomeCraft->GetAffiliationId() : NAME_None;
+	if (FighterTag.IsNone() || HomeTag.IsNone() || FighterTag == HomeTag)
+	{
+		return true;
+	}
+	return false;
+}
 
 static TAutoConsoleVariable<int32> CVarGPCombatLog(
 	TEXT("gp.CombatLog"),

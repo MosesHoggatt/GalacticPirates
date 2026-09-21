@@ -20,6 +20,7 @@
 #include "CraftReplication.h"
 #include "OccupancyComponent.h"
 #include "CraftWreck.h"
+#include "BulldogFighter.h"
 #include "Net/UnrealNetwork.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
@@ -59,6 +60,11 @@ AWalkableShip::AWalkableShip()
 	SpawnPoint = CreateDefaultSubobject<USceneComponent>(TEXT("SpawnPoint"));
 	SpawnPoint->SetupAttachment(ShipRoot);
 	SpawnPoint->SetRelativeLocation(FVector(0.0f, 0.0f, 100.0f));
+
+	HangarDock = CreateDefaultSubobject<USceneComponent>(TEXT("HangarDock"));
+	HangarDock->SetupAttachment(ShipRoot);
+	HangarDock->SetRelativeLocation(FVector(-980.0f, 0.0f, 95.0f));
+	HangarDock->SetRelativeRotation(FRotator(0.0f, 180.0f, 0.0f));
 
 	ShipMovement = CreateDefaultSubobject<UShipMovementComponent>(TEXT("ShipMovement"));
 	HullHealth = CreateDefaultSubobject<UHullHealthComponent>(TEXT("HullHealth"));
@@ -138,6 +144,40 @@ AWalkableShip::AWalkableShip()
 	StarboardPodNeck = MakePodPiece(CubeMesh, TEXT("StarboardPodNeck"), FVector(PodDoorwayWidth / 100.0f, 2.4f, 0.1f), FVector(PodDoorwayCenterX, PodCenterY - 120.0f, 5.0f), true);
 	StarboardDoorFillLower = MakePodPiece(CubeMesh, TEXT("StarboardDoorFillLower"), FVector::OneVector, FVector::ZeroVector, true);
 	StarboardDoorFillUpper = MakePodPiece(CubeMesh, TEXT("StarboardDoorFillUpper"), FVector::OneVector, FVector::ZeroVector, true);
+
+	auto MakeHangarPiece = [this](UStaticMesh* Mesh, const TCHAR* Name, const FVector& Scale, const FVector& RelLocation, const FRotator& RelRotation, bool bWalkable)
+	{
+		UStaticMeshComponent* Comp = CreateDefaultSubobject<UStaticMeshComponent>(Name);
+		Comp->SetupAttachment(HangarDock);
+		Comp->SetMobility(EComponentMobility::Movable);
+		Comp->SetRelativeLocation(RelLocation);
+		Comp->SetRelativeRotation(RelRotation);
+		Comp->SetRelativeScale3D(Scale);
+		Comp->SetStaticMesh(Mesh);
+		Comp->SetCastShadow(false);
+		Comp->SetCanEverAffectNavigation(false);
+		if (bWalkable)
+		{
+			Comp->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			Comp->SetCollisionObjectType(ECC_WorldDynamic);
+			Comp->SetCollisionProfileName(TEXT("BlockAll"));
+		}
+		else
+		{
+			Comp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		}
+		return Comp;
+	};
+
+	HangarPad = MakeHangarPiece(CubeMesh, TEXT("HangarPad"), FVector(7.2f, 5.4f, 0.18f), FVector(0.0f, 0.0f, -28.0f), FRotator::ZeroRotator, true);
+	HangarNeck = MakeHangarPiece(CubeMesh, TEXT("HangarNeck"), FVector(3.2f, 5.0f, 0.14f), FVector(-220.0f, 0.0f, -32.0f), FRotator::ZeroRotator, true);
+	HangarPortRail = MakeHangarPiece(CubeMesh, TEXT("HangarPortRail"), FVector(7.2f, 0.16f, 0.9f), FVector(0.0f, -280.0f, 20.0f), FRotator::ZeroRotator, false);
+	HangarStarboardRail = MakeHangarPiece(CubeMesh, TEXT("HangarStarboardRail"), FVector(7.2f, 0.16f, 0.9f), FVector(0.0f, 280.0f, 20.0f), FRotator::ZeroRotator, false);
+
+	AftHangarFillPortLower = MakePodPiece(CubeMesh, TEXT("AftHangarFillPortLower"), FVector::OneVector, FVector::ZeroVector, true);
+	AftHangarFillPortUpper = MakePodPiece(CubeMesh, TEXT("AftHangarFillPortUpper"), FVector::OneVector, FVector::ZeroVector, true);
+	AftHangarFillStarboardLower = MakePodPiece(CubeMesh, TEXT("AftHangarFillStarboardLower"), FVector::OneVector, FVector::ZeroVector, true);
+	AftHangarFillStarboardUpper = MakePodPiece(CubeMesh, TEXT("AftHangarFillStarboardUpper"), FVector::OneVector, FVector::ZeroVector, true);
 
 	PortGunHardpoint = CreateDefaultSubobject<UWeaponHardpointComponent>(TEXT("PortGunHardpoint"));
 	PortGunHardpoint->SetupAttachment(ShipRoot);
@@ -257,6 +297,16 @@ void AWalkableShip::BeginPlay()
 		HelmOccupancy->InteractRange = Helm ? Helm->InteractRange : HelmOccupancy->InteractRange;
 		HelmOccupancy->OnOccupancyChanged.AddDynamic(this, &AWalkableShip::HandleHelmOccupancy);
 	}
+	if (PortMinigun && PortGunOccupancy)
+	{
+		PortMinigun->Occupancy = PortGunOccupancy;
+		PortGunOccupancy->InteractRange = FMath::Max(PortGunOccupancy->InteractRange, PortMinigun->InteractRange);
+	}
+	if (StarboardMinigun && StarboardGunOccupancy)
+	{
+		StarboardMinigun->Occupancy = StarboardGunOccupancy;
+		StarboardGunOccupancy->InteractRange = FMath::Max(StarboardGunOccupancy->InteractRange, StarboardMinigun->InteractRange);
+	}
 	if (HasAuthority() && GetWorld() && GetWorld()->GetNetMode() == NM_DedicatedServer
 		&& GPDedicatedNetTestEnabled())
 	{
@@ -264,8 +314,17 @@ void AWalkableShip::BeginPlay()
 	}
 
 	CarveGunPodDoorways();
+	CarveAftHangarDoorway();
+	if (HasAuthority() && GetClass() != AWalkableShip::StaticClass())
+	{
+		ABulldogFighter::SpawnDockedOnShip(GetWorld(), this);
+	}
 	GPApplyPolishVfxMaterial(PortPodBubble, TEXT("circle_05"), FLinearColor(0.35f, 0.62f, 0.9f, 0.35f));
 	GPApplyPolishVfxMaterial(StarboardPodBubble, TEXT("circle_05"), FLinearColor(0.35f, 0.62f, 0.9f, 0.35f));
+	GPApplyPolishVfxMaterial(HangarPad, TEXT("circle_05"), FLinearColor(0.45f, 0.55f, 0.62f, 0.55f));
+	GPApplyPolishVfxMaterial(HangarNeck, TEXT("circle_05"), FLinearColor(0.45f, 0.55f, 0.62f, 0.55f));
+	GPApplyPolishVfxMaterial(HangarPortRail, TEXT("circle_05"), FLinearColor(0.28f, 0.48f, 0.72f, 0.4f));
+	GPApplyPolishVfxMaterial(HangarStarboardRail, TEXT("circle_05"), FLinearColor(0.28f, 0.48f, 0.72f, 0.4f));
 	LastNotifiedHealth = GetHealth();
 	ApplyAlarmLightFlash(0.0f);
 }
@@ -599,7 +658,10 @@ void AWalkableShip::CarveGunPodDoorways()
 	for (UStaticMeshComponent* Wall : Meshes)
 	{
 		if (!Wall || Wall == PortDoorFillLower || Wall == PortDoorFillUpper
-			|| Wall == StarboardDoorFillLower || Wall == StarboardDoorFillUpper)
+			|| Wall == StarboardDoorFillLower || Wall == StarboardDoorFillUpper
+			|| Wall == AftHangarFillPortLower || Wall == AftHangarFillPortUpper
+			|| Wall == AftHangarFillStarboardLower || Wall == AftHangarFillStarboardUpper
+			|| Wall == HangarPad || Wall == HangarNeck || Wall == HangarPortRail || Wall == HangarStarboardRail)
 		{
 			continue;
 		}
@@ -646,6 +708,144 @@ void AWalkableShip::CarveGunPodDoorways()
 	}
 
 	UE_LOG(LogGalacticPirates, Warning, TEXT("[GunPods] Carved %d hull wall sections for the port/starboard doorways"), CarvedWalls);
+}
+
+void AWalkableShip::CarveAftHangarDoorway()
+{
+	UStaticMeshComponent* AftFills[] = {
+		AftHangarFillPortLower, AftHangarFillPortUpper,
+		AftHangarFillStarboardLower, AftHangarFillStarboardUpper
+	};
+	for (UStaticMeshComponent* Fill : AftFills)
+	{
+		if (Fill)
+		{
+			Fill->SetVisibility(false);
+			Fill->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		}
+	}
+
+	const float DoorMinY = -HangarDoorwayWidth * 0.5f;
+	const float DoorMaxY = HangarDoorwayWidth * 0.5f;
+	int32 CarvedWalls = 0;
+	float FoundAftX = -980.0f;
+
+	TArray<UStaticMeshComponent*> Meshes;
+	GetComponents<UStaticMeshComponent>(Meshes);
+	for (UStaticMeshComponent* Wall : Meshes)
+	{
+		if (!Wall || Wall == InteriorMesh || Wall == HullMesh
+			|| Wall == HangarPad || Wall == HangarNeck || Wall == HangarPortRail || Wall == HangarStarboardRail
+			|| Wall == AftHangarFillPortLower || Wall == AftHangarFillPortUpper
+			|| Wall == AftHangarFillStarboardLower || Wall == AftHangarFillStarboardUpper
+			|| Wall == PortDoorFillLower || Wall == PortDoorFillUpper
+			|| Wall == StarboardDoorFillLower || Wall == StarboardDoorFillUpper)
+		{
+			continue;
+		}
+
+		const FVector Loc = Wall->GetRelativeLocation();
+		const FVector Scale = Wall->GetRelativeScale3D();
+		const float Yaw = Wall->GetRelativeRotation().Yaw;
+		const bool bYawSideways = FMath::Abs(FMath::FindDeltaAngleDegrees(Yaw, 90.0f)) < 20.0f
+			|| FMath::Abs(FMath::FindDeltaAngleDegrees(Yaw, -90.0f)) < 20.0f;
+		const float WidthScale = bYawSideways ? Scale.X : Scale.Y;
+		const float ThickScale = bYawSideways ? Scale.Y : Scale.X;
+		const bool bIsAftWall = Loc.X < -250.0f
+			&& FMath::Abs(Loc.Y) < 250.0f
+			&& WidthScale >= 4.0f
+			&& ThickScale <= 1.5f
+			&& Scale.Z >= 0.4f;
+		if (!bIsAftWall)
+		{
+			continue;
+		}
+
+		const float HalfWidth = WidthScale * 50.0f;
+		const float WallMinY = Loc.Y - HalfWidth;
+		const float WallMaxY = Loc.Y + HalfWidth;
+		if (DoorMinY <= WallMinY || DoorMaxY >= WallMaxY)
+		{
+			UE_LOG(LogGalacticPirates, Warning,
+				TEXT("[Hangar] aft wall %s loc=%s scale=%s yaw=%.0f is too narrow to cut a %0.0fcm door"),
+				*Wall->GetName(),
+				*Loc.ToCompactString(),
+				*Scale.ToCompactString(),
+				Yaw,
+				HangarDoorwayWidth);
+			continue;
+		}
+
+		const bool bUpperBand = Loc.Z > 150.0f;
+		UStaticMeshComponent* StarboardFill = bUpperBand ? AftHangarFillStarboardUpper : AftHangarFillStarboardLower;
+		if (!StarboardFill)
+		{
+			continue;
+		}
+
+		const float StarboardLength = WallMaxY - DoorMaxY;
+		const float PortLength = DoorMinY - WallMinY;
+		const FVector StarboardScale = bYawSideways
+			? FVector(StarboardLength / 100.0f, Scale.Y, Scale.Z)
+			: FVector(Scale.X, StarboardLength / 100.0f, Scale.Z);
+		const FVector PortScale = bYawSideways
+			? FVector(PortLength / 100.0f, Scale.Y, Scale.Z)
+			: FVector(Scale.X, PortLength / 100.0f, Scale.Z);
+
+		StarboardFill->SetStaticMesh(Wall->GetStaticMesh());
+		StarboardFill->SetMaterial(0, Wall->GetMaterial(0));
+		StarboardFill->SetRelativeRotation(Wall->GetRelativeRotation());
+		StarboardFill->SetRelativeLocation(FVector(Loc.X, DoorMaxY + StarboardLength * 0.5f, Loc.Z));
+		StarboardFill->SetRelativeScale3D(StarboardScale);
+		StarboardFill->SetVisibility(true);
+		StarboardFill->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+
+		Wall->SetRelativeLocation(FVector(Loc.X, WallMinY + PortLength * 0.5f, Loc.Z));
+		Wall->SetRelativeScale3D(PortScale);
+		FoundAftX = Loc.X;
+		++CarvedWalls;
+
+		UE_LOG(LogGalacticPirates, Warning,
+			TEXT("[Hangar] opened aft wall %s at X=%.0f (upper=%d) portY=%.0f starboardY=%.0f"),
+			*Wall->GetName(),
+			Loc.X,
+			bUpperBand ? 1 : 0,
+			WallMinY + PortLength * 0.5f,
+			DoorMaxY + StarboardLength * 0.5f);
+	}
+
+	if (CarvedWalls == 0)
+	{
+		for (UStaticMeshComponent* Wall : Meshes)
+		{
+			if (!Wall)
+			{
+				continue;
+			}
+			const FVector Loc = Wall->GetRelativeLocation();
+			if (Loc.X > -50.0f)
+			{
+				continue;
+			}
+			UE_LOG(LogGalacticPirates, Warning,
+				TEXT("[Hangar] aft candidate %s loc=%s scale=%s yaw=%.0f vis=%d"),
+				*Wall->GetName(),
+				*Loc.ToCompactString(),
+				*Wall->GetRelativeScale3D().ToCompactString(),
+				Wall->GetRelativeRotation().Yaw,
+				Wall->IsVisible() ? 1 : 0);
+		}
+	}
+
+	if (HangarDock)
+	{
+		HangarDock->SetRelativeLocation(FVector(FoundAftX - 240.0f, 0.0f, 95.0f));
+		HangarDock->SetRelativeRotation(FRotator(0.0f, 180.0f, 0.0f));
+	}
+
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[Hangar] carved %d aft wall sections, dock=%s"),
+		CarvedWalls,
+		HangarDock ? *HangarDock->GetRelativeLocation().ToCompactString() : TEXT("none"));
 }
 
 bool AWalkableShip::IsWalkableWorldLocation(const FVector& WorldLocation) const
@@ -1094,6 +1294,47 @@ void AWalkableShip::Multicast_Explode_Implementation()
 		static_cast<int32>(GetNetMode()));
 }
 
+ABulldogFighter* AWalkableShip::FindHangarFighter() const
+{
+	TArray<AActor*> Attached;
+	GetAttachedActors(Attached, true, true);
+	for (AActor* Actor : Attached)
+	{
+		if (ABulldogFighter* Fighter = Cast<ABulldogFighter>(Actor))
+		{
+			return Fighter;
+		}
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+	for (TActorIterator<ABulldogFighter> It(World); It; ++It)
+	{
+		ABulldogFighter* Fighter = *It;
+		if (Fighter && (Fighter->GetHomeCraft() == this || Fighter->GetAttachParentActor() == this))
+		{
+			return Fighter;
+		}
+	}
+	return nullptr;
+}
+
+static bool GPHangarFighterInRange(const AWalkableShip* Ship, const APawn* Pawn, float& OutDist)
+{
+	OutDist = TNumericLimits<float>::Max();
+	ABulldogFighter* Fighter = Ship ? Ship->FindHangarFighter() : nullptr;
+	UOccupancyComponent* Seat = Fighter ? Fighter->CockpitOccupancy.Get() : nullptr;
+	if (!Seat || !Seat->IsInRange(Pawn))
+	{
+		return false;
+	}
+	OutDist = FVector::Dist(Pawn->GetActorLocation(), Seat->GetComponentLocation());
+	return true;
+}
+
 bool AWalkableShip::TryStationInteract(AGalacticPiratesCharacter* Character)
 {
 	if (!HasAuthority() || !Character || bWrecked)
@@ -1134,6 +1375,15 @@ bool AWalkableShip::TryStationInteract(AGalacticPiratesCharacter* Character)
 	if (bMissileInRange && MissileDist < BestDist) { BestDist = MissileDist; Best = 3; }
 	if (bPortGunInRange && PortGunDist < BestDist) { BestDist = PortGunDist; Best = 4; }
 	if (bStbdGunInRange && StbdGunDist < BestDist) { BestDist = StbdGunDist; Best = 5; }
+
+	float HangarDist = TNumericLimits<float>::Max();
+	if (GPHangarFighterInRange(this, Character, HangarDist) && HangarDist < BestDist)
+	{
+		if (ABulldogFighter* Fighter = FindHangarFighter())
+		{
+			return Fighter->TryCockpitInteract(Character);
+		}
+	}
 
 	if (Best == 1)
 	{
@@ -1196,6 +1446,12 @@ FText AWalkableShip::GetInteractPrompt(AGalacticPiratesCharacter* Character) con
 	if (bMissileInRange && MissileDist < BestDist) { BestDist = MissileDist; Best = 3; }
 	if (bPortGunInRange && PortGunDist < BestDist) { BestDist = PortGunDist; Best = 4; }
 	if (bStbdGunInRange && StbdGunDist < BestDist) { BestDist = StbdGunDist; Best = 5; }
+
+	float HangarDist = TNumericLimits<float>::Max();
+	if (GPHangarFighterInRange(this, Character, HangarDist) && HangarDist < BestDist)
+	{
+		return FText::FromString(TEXT("Press F  ·  Enter fighter"));
+	}
 
 	if (Best == 1)
 	{

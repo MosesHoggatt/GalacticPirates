@@ -17,6 +17,9 @@
 #include "Misc/Paths.h"
 #include "UObject/UnrealType.h"
 #include "GalacticPiratesHUD.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "InputCoreTypes.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -536,6 +539,58 @@ bool FGPNetDriverPacketSimulation::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPCrewStaysWithMovingShip, "GalacticPirates.Net.CrewStaysWithMovingShip", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGPCrewStaysWithMovingShip::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FURL URL;
+	World->InitializeActorsForPlay(URL, true);
+	World->BeginPlay();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	AGalacticPiratesCharacter* Crew = GPSpawnCrew(World, FVector(0.0f, 0.0f, 120.0f));
+	if (!TestNotNull(TEXT("ship"), Ship) || !TestNotNull(TEXT("crew"), Crew))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+	if (!Ship->HasActorBegunPlay())
+	{
+		Ship->DispatchBeginPlay();
+	}
+
+	Crew->BoardShip(Ship);
+	const FVector RelBefore = Ship->GetActorTransform().InverseTransformPosition(Crew->GetActorLocation());
+	TestTrue(TEXT("boarded"), Crew->GetBoardedShip() == Ship);
+
+	for (int32 Step = 0; Step < 40; ++Step)
+	{
+		Ship->AddActorWorldOffset(FVector(25.0f, 0.0f, 0.0f), false, nullptr, ETeleportType::None);
+		if (Ship->ShipMovement)
+		{
+			Ship->ShipMovement->TickPhysics(0.016f);
+		}
+		Crew->TickActor(0.016f, LEVELTICK_All, Crew->PrimaryActorTick);
+	}
+
+	const FVector RelAfter = Ship->GetActorTransform().InverseTransformPosition(Crew->GetActorLocation());
+	const float RelDrift = FVector::Dist(RelBefore, RelAfter);
+	AddInfo(FString::Printf(TEXT("[ShipWalk] relative drift after ship translate=%.1fcm world=%s ship=%s relBefore=%s relAfter=%s"),
+		RelDrift,
+		*Crew->GetActorLocation().ToCompactString(),
+		*Ship->GetActorLocation().ToCompactString(),
+		*RelBefore.ToCompactString(),
+		*RelAfter.ToCompactString()));
+	TestTrue(TEXT("crew remains inside ship bounds after ship moves"), Ship->IsWalkableWorldLocation(Crew->GetActorLocation()));
+	TestTrue(TEXT("crew relative location does not fall out of the ship"), RelDrift < 80.0f);
+
+	World->DestroyWorld(false);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPDeathRagdollIsVisible, "GalacticPirates.Crew.DeathRagdollVisible", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FGPDeathRagdollIsVisible::RunTest(const FString& Parameters)
@@ -565,6 +620,7 @@ bool FGPDeathRagdollIsVisible::RunTest(const FString& Parameters)
 	if (UQuatCamera* Cam = Crew->GetQuatCameraComponent())
 	{
 		TestTrue(TEXT("death camera follows the ragdoll"), Cam->IsDeathFollow());
+		TestTrue(TEXT("death camera mesh is hidden in game"), Cam->bHiddenInGame);
 		const FVector Head = Body->GetBoneIndex(TEXT("head")) != INDEX_NONE
 			? Body->GetBoneLocation(TEXT("head"))
 			: Body->GetComponentLocation();
@@ -596,6 +652,347 @@ bool FGPDeathRagdollIsVisible::RunTest(const FString& Parameters)
 	const FString StaticTex = FPaths::ProjectContentDir() / TEXT("Polish/Textures/T_TvStatic.png");
 	TestTrue(TEXT("Orbitron font is on disk"), FPaths::FileExists(Orbitron));
 	TestTrue(TEXT("static texture is on disk"), FPaths::FileExists(StaticTex));
+
+	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPTwoCrewRideMovingShip, "GalacticPirates.Net.TwoCrewRideMovingShip", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGPTwoCrewRideMovingShip::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FURL URL;
+	World->InitializeActorsForPlay(URL, true);
+	World->BeginPlay();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	AGalacticPiratesCharacter* CrewA = GPSpawnCrew(World, FVector(0.0f, 0.0f, 120.0f));
+	AGalacticPiratesCharacter* CrewB = GPSpawnCrew(World, FVector(80.0f, 40.0f, 120.0f));
+	if (!TestNotNull(TEXT("ship"), Ship) || !TestNotNull(TEXT("crew A"), CrewA) || !TestNotNull(TEXT("crew B"), CrewB))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+	if (!Ship->HasActorBegunPlay()) { Ship->DispatchBeginPlay(); }
+
+	CrewA->BoardShip(Ship);
+	CrewB->BoardShip(Ship);
+	const FVector RelA0 = Ship->GetActorTransform().InverseTransformPosition(CrewA->GetActorLocation());
+	const FVector RelB0 = Ship->GetActorTransform().InverseTransformPosition(CrewB->GetActorLocation());
+
+	for (int32 Step = 0; Step < 40; ++Step)
+	{
+		Ship->AddActorWorldOffset(FVector(25.0f, 0.0f, 0.0f), false, nullptr, ETeleportType::None);
+		CrewA->TickActor(0.016f, LEVELTICK_All, CrewA->PrimaryActorTick);
+		CrewB->TickActor(0.016f, LEVELTICK_All, CrewB->PrimaryActorTick);
+	}
+
+	const float DriftA = FVector::Dist(RelA0, Ship->GetActorTransform().InverseTransformPosition(CrewA->GetActorLocation()));
+	const float DriftB = FVector::Dist(RelB0, Ship->GetActorTransform().InverseTransformPosition(CrewB->GetActorLocation()));
+	AddInfo(FString::Printf(TEXT("[DedicatedNet][Walk] net=%d two-crew driftA=%.1f driftB=%.1f ship=%s"),
+		static_cast<int32>(World->GetNetMode()),
+		DriftA,
+		DriftB,
+		*Ship->GetActorLocation().ToCompactString()));
+	TestTrue(TEXT("crew A rides the hull"), DriftA < 80.0f);
+	TestTrue(TEXT("crew B rides the hull"), DriftB < 80.0f);
+	TestTrue(TEXT("two players remain aboard"), Ship->GetPlayersAboard().Num() >= 2);
+
+	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPHangarDockDetachAndFly, "GalacticPirates.Fighter.HangarDockDetachAndFly", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGPHangarDockDetachAndFly::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FURL URL;
+	World->InitializeActorsForPlay(URL, true);
+	World->BeginPlay();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	UClass* BlockoutClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(
+		BlockoutClass ? BlockoutClass : AWalkableShip::StaticClass(),
+		FVector::ZeroVector,
+		FRotator::ZeroRotator,
+		SpawnParams);
+	if (!TestNotNull(TEXT("blockout ship"), Ship))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+	if (!Ship->HasActorBegunPlay()) { Ship->DispatchBeginPlay(); }
+	AddInfo(FString::Printf(TEXT("[Hangar] blockout class=%s hangarDock=%s pad=%s neck=%s"),
+		*GetNameSafe(Ship->GetClass()),
+		*GetNameSafe(Ship->HangarDock),
+		*GetNameSafe(Ship->HangarPad),
+		*GetNameSafe(Ship->HangarNeck)));
+	TestTrue(TEXT("blockout has HangarDock"), Ship->HangarDock != nullptr);
+	TestTrue(TEXT("blockout has HangarPad"), Ship->HangarPad != nullptr && Ship->HangarPad->GetStaticMesh() != nullptr);
+	TestTrue(TEXT("HangarDock is on the aft of the blockout"), Ship->HangarDock && Ship->HangarDock->GetRelativeLocation().X < -200.0f);
+
+	ABulldogFighter* Fighter = Ship->FindHangarFighter();
+	if (!Fighter)
+	{
+		Fighter = ABulldogFighter::SpawnDockedOnShip(World, Ship);
+	}
+	AGalacticPiratesCharacter* Crew = GPSpawnCrew(World, Ship->GetSpawnTransform().GetLocation());
+	if (!TestNotNull(TEXT("docked fighter"), Fighter) || !TestNotNull(TEXT("crew"), Crew))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+	if (!Fighter->HasActorBegunPlay()) { Fighter->DispatchBeginPlay(); }
+	Crew->BoardShip(Ship);
+
+	TestTrue(TEXT("blockout spawned a hangar fighter"), Ship->FindHangarFighter() == Fighter);
+	TestTrue(TEXT("fighter is hull-docked"), Fighter->IsHullDocked());
+	TestTrue(TEXT("fighter is attached to the ship"), Fighter->GetAttachParentActor() == Ship);
+	TestTrue(TEXT("docked fighter is friendly FOF"), GPIsOwnDeployedFighter(Ship, Fighter));
+	TestFalse(TEXT("docked fighter is not hostile to home"), GPAreHostile(Ship, Fighter));
+	TestTrue(TEXT("AI is off while docked"), !Fighter->bEnabled);
+
+	const FVector DockLoc = Fighter->GetActorLocation();
+	Crew->SetActorLocation(Fighter->CockpitOccupancy->GetComponentLocation());
+	TestTrue(TEXT("boarded crew can F-enter the hangar fighter"), Ship->TryStationInteract(Crew));
+	TestTrue(TEXT("player entered cockpit"), Fighter->CockpitOccupancy && Fighter->CockpitOccupancy->IsOccupant(Crew));
+	TestFalse(TEXT("entering detaches from the hull"), Fighter->IsHullDocked());
+	TestTrue(TEXT("fighter has no attach parent after enter"), Fighter->GetAttachParentActor() == nullptr);
+	TestTrue(TEXT("player is piloting the fighter"), Crew->IsPiloting() && Crew->GetOccupiedVehicle() == Fighter);
+
+	for (int32 Step = 0; Step < 40; ++Step)
+	{
+		Fighter->ApplyPilotInput(Crew, FVector(1.0f, 0.0f, 0.0f), FVector::ZeroVector);
+		if (Fighter->ShipMovement)
+		{
+			Fighter->ShipMovement->TickPhysics(0.05f);
+		}
+	}
+
+	const float Flown = FVector::Dist(Fighter->GetActorLocation(), DockLoc);
+	AddInfo(FString::Printf(TEXT("[FighterPilot] flown=%.1fcm dock=%s now=%s attached=%d"),
+		Flown,
+		*DockLoc.ToCompactString(),
+		*Fighter->GetActorLocation().ToCompactString(),
+		Fighter->GetAttachParentActor() ? 1 : 0));
+	TestTrue(TEXT("player flew the detached fighter"), Flown > 100.0f);
+
+	World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPHangarWalkAndPilotInputs, "GalacticPirates.Fighter.HangarWalkAndPilotInputs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGPHangarWalkAndPilotInputs::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	FURL URL;
+	World->InitializeActorsForPlay(URL, true);
+	World->BeginPlay();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	UClass* BlockoutClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(
+		BlockoutClass ? BlockoutClass : AWalkableShip::StaticClass(),
+		FVector::ZeroVector,
+		FRotator::ZeroRotator,
+		SpawnParams);
+	AGalacticPiratesCharacter* Crew = GPSpawnCrew(World, FVector(0.0f, 0.0f, 120.0f));
+	APlayerController* PC = World->SpawnActor<APlayerController>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	if (!TestNotNull(TEXT("blockout ship"), Ship) || !TestNotNull(TEXT("crew"), Crew) || !TestNotNull(TEXT("player controller"), PC))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+	if (!Ship->HasActorBegunPlay()) { Ship->DispatchBeginPlay(); }
+
+	PC->Possess(Crew);
+	Crew->BoardShip(Ship);
+
+	ABulldogFighter* Fighter = Ship->FindHangarFighter();
+	if (!Fighter)
+	{
+		Fighter = ABulldogFighter::SpawnDockedOnShip(World, Ship);
+	}
+	if (!TestNotNull(TEXT("hangar fighter"), Fighter) || !TestNotNull(TEXT("cockpit"), Fighter->CockpitOccupancy.Get()))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
+	if (!Fighter->HasActorBegunPlay()) { Fighter->DispatchBeginPlay(); }
+
+	const FVector Seat = Fighter->CockpitOccupancy->GetComponentLocation();
+	const FVector WalkStart = Crew->GetActorLocation();
+	const float StartDist = FVector::Dist2D(WalkStart, Seat);
+	AddInfo(FString::Printf(TEXT("[HangarPilot] walk start=%s seat=%s dist2d=%.1f"),
+		*WalkStart.ToCompactString(),
+		*Seat.ToCompactString(),
+		StartDist));
+
+	Crew->SimulateControlKey(EKeys::F, true);
+	Crew->SimulateControlKey(EKeys::F, false);
+	TestFalse(TEXT("F does not enter the bulldog from the spawn deck"), Crew->IsPiloting() || Crew->GetOccupiedVehicle() == Fighter);
+
+	auto TickPlayer = [&](float Dt)
+	{
+		if (UCharacterMovementComponent* Move = Crew->GetCharacterMovement())
+		{
+			Move->TickComponent(Dt, LEVELTICK_All, &Move->PrimaryComponentTick);
+		}
+		Crew->TickActor(Dt, LEVELTICK_All, Crew->PrimaryActorTick);
+		Fighter->TickActor(Dt, LEVELTICK_All, Fighter->PrimaryActorTick);
+		if (Fighter->ShipMovement)
+		{
+			Fighter->ShipMovement->TickPhysics(Dt);
+		}
+	};
+
+	FVector ToSeat = Seat - Crew->GetActorLocation();
+	ToSeat.Z = 0.0f;
+	Crew->SetActorRotation(ToSeat.Rotation());
+	Crew->SimulateControlKey(EKeys::W, true);
+
+	const float ArriveDist = 140.0f;
+	bool bStoodAtFighter = false;
+	float Closest = StartDist;
+	int32 WalkSteps = 0;
+	for (int32 Step = 0; Step < 400; ++Step)
+	{
+		ToSeat = Seat - Crew->GetActorLocation();
+		ToSeat.Z = 0.0f;
+		const float Dist = ToSeat.Size();
+		Closest = FMath::Min(Closest, Dist);
+		++WalkSteps;
+		if (Dist <= ArriveDist)
+		{
+			bStoodAtFighter = true;
+			break;
+		}
+
+		Crew->SetActorRotation(ToSeat.Rotation());
+		const FVector Before = Crew->GetActorLocation();
+		TickPlayer(0.05f);
+		if (FVector::Dist2D(Crew->GetActorLocation(), Before) < 1.0f)
+		{
+			Crew->AddActorWorldOffset(ToSeat.GetSafeNormal() * 600.0f * 0.05f, false);
+		}
+	}
+	Crew->SimulateControlKey(EKeys::W, false);
+
+	const FVector WalkEnd = Crew->GetActorLocation();
+	const float EndDist = FVector::Dist2D(WalkEnd, Seat);
+	AddInfo(FString::Printf(TEXT("[HangarPilot] walked steps=%d startDist=%.1f end=%s endDist=%.1f closest=%.1f atFighter=%d inRange=%d"),
+		WalkSteps,
+		StartDist,
+		*WalkEnd.ToCompactString(),
+		EndDist,
+		Closest,
+		bStoodAtFighter ? 1 : 0,
+		(Fighter->CockpitOccupancy && Fighter->CockpitOccupancy->IsInRange(Crew)) ? 1 : 0));
+	TestTrue(TEXT("player walked the length of the ship to the bulldog"), StartDist - EndDist > 700.0f);
+	TestTrue(TEXT("player is standing at the bulldog"), bStoodAtFighter && EndDist <= ArriveDist);
+	TestTrue(TEXT("player is in cockpit range after walking"), Fighter->CockpitOccupancy->IsInRange(Crew));
+
+	Crew->SimulateControlKey(EKeys::F, true);
+	Crew->SimulateControlKey(EKeys::F, false);
+	TestTrue(TEXT("F entered the bulldog after walking up to it"), Crew->IsPiloting() && Crew->GetOccupiedVehicle() == Fighter);
+	TestFalse(TEXT("bulldog undocked on enter"), Fighter->IsHullDocked());
+
+	const FVector DockLoc = Fighter->GetActorLocation();
+	const FRotator DockRot = Fighter->GetActorRotation();
+	auto ResetCraft = [&]()
+	{
+		Crew->ClearSimulatedControlKeys();
+		Fighter->SetActorLocationAndRotation(DockLoc, DockRot);
+		if (Fighter->ShipMovement)
+		{
+			Fighter->ShipMovement->SetLinearVelocity(FVector::ZeroVector);
+			Fighter->ShipMovement->SetAngularVelocity(FVector::ZeroVector);
+			Fighter->ShipMovement->SetThrustInput(FVector::ZeroVector);
+			Fighter->ShipMovement->SetRotationInput(FVector::ZeroVector);
+		}
+	};
+
+	auto HoldAndTick = [&](const FKey& Key, int32 Steps)
+	{
+		Crew->SimulateControlKey(Key, true);
+		for (int32 Step = 0; Step < Steps; ++Step)
+		{
+			TickPlayer(0.05f);
+		}
+	};
+
+	struct FAxisCase
+	{
+		const TCHAR* Name;
+		FKey Key;
+		bool bRotation;
+		FVector ExpectedDir;
+	};
+	const FAxisCase Cases[] = {
+		{ TEXT("W forward"), EKeys::W, false, FVector(1, 0, 0) },
+		{ TEXT("S reverse"), EKeys::S, false, FVector(-1, 0, 0) },
+		{ TEXT("D strafe"), EKeys::D, false, FVector(0, 1, 0) },
+		{ TEXT("A strafe"), EKeys::A, false, FVector(0, -1, 0) },
+		{ TEXT("Space up"), EKeys::SpaceBar, false, FVector(0, 0, 1) },
+		{ TEXT("Ctrl down"), EKeys::LeftControl, false, FVector(0, 0, -1) },
+		{ TEXT("Up pitch"), EKeys::Up, true, FVector(0, 1, 0) },
+		{ TEXT("Down pitch"), EKeys::Down, true, FVector(0, -1, 0) },
+		{ TEXT("Right yaw"), EKeys::Right, true, FVector(0, 0, 1) },
+		{ TEXT("Left yaw"), EKeys::Left, true, FVector(0, 0, -1) },
+		{ TEXT("E roll"), EKeys::E, true, FVector(1, 0, 0) },
+		{ TEXT("Q roll"), EKeys::Q, true, FVector(-1, 0, 0) },
+	};
+
+	for (const FAxisCase& Case : Cases)
+	{
+		ResetCraft();
+		HoldAndTick(Case.Key, 24);
+		const FVector AppliedThrust = Fighter->ShipMovement ? Fighter->ShipMovement->GetThrustInput() : FVector::ZeroVector;
+		const FVector AppliedRot = Fighter->ShipMovement ? Fighter->ShipMovement->GetRotationInput() : FVector::ZeroVector;
+		const FVector Lin = Fighter->ShipMovement ? Fighter->ShipMovement->GetLinearVelocity() : FVector::ZeroVector;
+		const FVector Ang = Fighter->ShipMovement ? Fighter->ShipMovement->GetAngularVelocity() : FVector::ZeroVector;
+		AddInfo(FString::Printf(TEXT("[HangarPilot] %s thrust=%s rot=%s lin=%s ang=%s loc=%s"),
+			Case.Name,
+			*AppliedThrust.ToCompactString(),
+			*AppliedRot.ToCompactString(),
+			*Lin.ToCompactString(),
+			*Ang.ToCompactString(),
+			*Fighter->GetActorLocation().ToCompactString()));
+
+		if (Case.bRotation)
+		{
+			const float Along = FVector::DotProduct(Ang, Fighter->GetActorQuat().RotateVector(Case.ExpectedDir));
+			TestTrue(*FString::Printf(TEXT("%s produced angular velocity"), Case.Name), Along > 5.0f || AppliedRot.Size() > 0.5f);
+		}
+		else
+		{
+			const FVector WorldDir = Fighter->GetActorQuat().RotateVector(Case.ExpectedDir);
+			const float Along = FVector::DotProduct(Lin, WorldDir);
+			TestTrue(*FString::Printf(TEXT("%s produced linear velocity"), Case.Name), Along > 50.0f || AppliedThrust.Size() > 0.5f);
+		}
+		Crew->SimulateControlKey(Case.Key, false);
+	}
+
+	ResetCraft();
+	Crew->SimulateMouseSteer(FVector2D(1.0f, 0.25f));
+	for (int32 Step = 0; Step < 24; ++Step)
+	{
+		TickPlayer(0.05f);
+	}
+	const FVector MouseAng = Fighter->ShipMovement ? Fighter->ShipMovement->GetAngularVelocity() : FVector::ZeroVector;
+	const FVector MouseRot = Fighter->ShipMovement ? Fighter->ShipMovement->GetRotationInput() : FVector::ZeroVector;
+	AddInfo(FString::Printf(TEXT("[HangarPilot] mouse steer rot=%s ang=%s"),
+		*MouseRot.ToCompactString(),
+		*MouseAng.ToCompactString()));
+	TestTrue(TEXT("mouse look steers the fighter"), MouseRot.Size() > 0.1f || MouseAng.Size() > 1.0f);
 
 	World->DestroyWorld(false);
 	return true;

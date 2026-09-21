@@ -103,6 +103,14 @@ void AGalacticPiratesPlayerController::BeginCrewDeathPresentation()
 		return;
 	}
 
+	AGalacticPiratesCharacter* Crew = Cast<AGalacticPiratesCharacter>(GetPawn());
+	if (!Crew || !Crew->IsDead() || !Crew->IsLocallyControlled())
+	{
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[DeathFX] PC BeginCrewDeathPresentation ignored: pawn is not the local dead crew (%s)"),
+			*GetNameSafe(GetPawn()));
+		return;
+	}
+
 	if (ShipHud)
 	{
 		ShipHud->SetVisibility(ESlateVisibility::Collapsed);

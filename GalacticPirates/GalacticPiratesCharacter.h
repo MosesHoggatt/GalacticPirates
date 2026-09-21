@@ -163,6 +163,12 @@ public:
 	/** Replace leftover held ship commands with the keys/sticks held right now. */
 	void FlushHeldShipInputsOnTakeHelm();
 
+	/** C++ control path used by tests and as a fallback when Blueprint IMCs are empty. */
+	void SimulateControlKey(const FKey& Key, bool bPressed);
+	void ClearSimulatedControlKeys();
+	void PollAndSendVehicleInput(bool bForceSend = true);
+	void SimulateMouseSteer(const FVector2D& Delta);
+
 	/** Called when the boarded ship is destroyed */
 	void OnShipDestroyed();
 
@@ -308,10 +314,22 @@ private:
 	UPROPERTY(Transient)
 	UInputMappingContext* RuntimeLocomotionIMC = nullptr;
 
+	UPROPERTY(Transient)
+	UInputMappingContext* RuntimeVehicleControlIMC = nullptr;
+
 	/** Adds helm interact plus walk/look mappings if the possessed controller does not provide them. */
 	void SetupShipAccessInputContext();
 
 	void MapRuntimeLocomotionKeys();
+	void ApplyVehicleControlMapping(bool bEnable);
+	void EnsureNativeShipInputActions();
+	void BindNativeVehicleInput();
+	void PollHeldWalkKeys();
+	void PollHeldVehicleKeys();
+	bool IsControlKeyDown(const FKey& Key) const;
+
+	TSet<FKey> SimulatedHeldKeys;
+	bool bNativeVehicleInputBound = false;
 
 	void TickAutomatedShipPlaytest(float DeltaTime);
 	void InjectPlaytestKey(const FKey& Key, EInputEvent Event, float Delta = 1.0f);
@@ -355,6 +373,8 @@ private:
 
 	FTransform LastGoodShipRelative = FTransform::Identity;
 	bool bHasLastGoodShipRelative = false;
+	FTransform LastShipWorldTM = FTransform::Identity;
+	bool bHasLastShipWorldTM = false;
 	float TimeOffShipDeck = 0.0f;
 
 public:

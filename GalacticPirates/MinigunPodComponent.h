@@ -120,6 +120,9 @@ public:
 
 	UOccupancyComponent* GetOccupancy() const { return Occupancy; }
 
+	/** Unmanned AI mounts (fighter nose gun) fire through the existing SetFiring/tick path. */
+	bool bAllowFireWithoutGunner = false;
+
 	void ForceRelease();
 	/** Muzzle flash, tracer and report for one round; also the body of the fire multicast. */
 	void PlayShotFx(const FVector& Start, const FVector& End, bool bHit);
@@ -128,6 +131,8 @@ public:
 	float GetAimYaw() const { return AimYaw; }
 	float GetAimPitch() const { return AimPitch; }
 	void SetFiring(bool bNewFiring);
+	virtual bool CanFireWeapon() const override;
+	virtual bool TryFireWeapon(APawn* InstigatorPawn) override;
 	void ApplyAim(float NewYaw, float NewPitch);
 	void AimAtWorldLocation(const FVector& WorldLocation);
 	void RestAim();

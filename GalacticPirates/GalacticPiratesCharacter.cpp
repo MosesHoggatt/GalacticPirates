@@ -3,6 +3,7 @@
 #include "GalacticPiratesCharacter.h"
 #include "Animation/AnimInstance.h"
 #include "QuatCamera.h"
+#include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EnhancedInputComponent.h"
@@ -141,9 +142,19 @@ void AGalacticPiratesCharacter::NotifyControllerChanged()
 {
 	Super::NotifyControllerChanged();
 
+	if (IsLocallyControlled() || HasAuthority())
+	{
+		EnsureNativeShipInputActions();
+		BindNativeVehicleInput();
+	}
+
 	if (IsLocallyControlled())
 	{
 		SetupShipAccessInputContext();
+		if (bIsPiloting)
+		{
+			ApplyVehicleControlMapping(true);
+		}
 		GPShipDebugSnapshot(this, TEXT("ControllerChanged"));
 		if (GPInteriorTestEnabled() && !GPIsInteriorWalkTestRunning())
 		{
@@ -183,9 +194,15 @@ void AGalacticPiratesCharacter::Tick(float DeltaTime)
 		}
 	}
 
-	if (bIsPiloting && IsLocallyControlled())
+	if (!bIsPiloting && (HasAuthority() || IsLocallyControlled()))
 	{
-		if (!bHelmMouseSteerThisFrame)
+		PollHeldWalkKeys();
+	}
+
+	if (bIsPiloting && (HasAuthority() || IsLocallyControlled()))
+	{
+		PollHeldVehicleKeys();
+		if (!bHelmMouseSteerThisFrame && IsLocallyControlled())
 		{
 			HelmMouseSteer = FMath::Vector2DInterpConstantTo(HelmMouseSteer, FVector2D::ZeroVector, DeltaTime, 2.5f);
 		}
@@ -274,40 +291,28 @@ bool AGalacticPiratesCharacter::IsNetRelevantFor(const AActor* RealViewer, const
 
 void AGalacticPiratesCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {	
+	EnsureNativeShipInputActions();
 	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent))
 	{
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &AGalacticPiratesCharacter::DoJumpStart);
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &AGalacticPiratesCharacter::DoJumpEnd);
-		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::MoveInput);
-		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::LookInput);
-		EnhancedInputComponent->BindAction(MouseLookAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::MouseLookInput);
-
-		if (ShipThrustAction)
+		if (JumpAction)
 		{
-			EnhancedInputComponent->BindAction(ShipThrustAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::ShipThrustInput);
+			EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &AGalacticPiratesCharacter::DoJumpStart);
+			EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &AGalacticPiratesCharacter::DoJumpEnd);
 		}
-		if (ShipVerticalAction)
+		if (MoveAction)
 		{
-			EnhancedInputComponent->BindAction(ShipVerticalAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::ShipVerticalInput);
+			EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::MoveInput);
 		}
-		if (ShipRotationAction)
+		if (LookAction)
 		{
-			EnhancedInputComponent->BindAction(ShipRotationAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::ShipRotationInput);
+			EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::LookInput);
 		}
-		if (ShipRollAction)
+		if (MouseLookAction)
 		{
-			EnhancedInputComponent->BindAction(ShipRollAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::ShipRollInput);
-		}
-		if (ShipInteractAction)
-		{
-			EnhancedInputComponent->BindAction(ShipInteractAction, ETriggerEvent::Started, this, &AGalacticPiratesCharacter::ShipInteractInput);
-		}
-		if (MinigunFireAction)
-		{
-			EnhancedInputComponent->BindAction(MinigunFireAction, ETriggerEvent::Started, this, &AGalacticPiratesCharacter::MinigunFireInput);
-			EnhancedInputComponent->BindAction(MinigunFireAction, ETriggerEvent::Completed, this, &AGalacticPiratesCharacter::MinigunFireInput);
+			EnhancedInputComponent->BindAction(MouseLookAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::MouseLookInput);
 		}
 
+		BindNativeVehicleInput();
 		SetupShipAccessInputContext();
 	}
 	else
@@ -443,6 +448,244 @@ void AGalacticPiratesCharacter::MapRuntimeLocomotionKeys()
 	}
 }
 
+void AGalacticPiratesCharacter::ApplyVehicleControlMapping(bool bEnable)
+{
+	EnsureNativeShipInputActions();
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC || !PC->IsLocalController())
+	{
+		return;
+	}
+
+	UEnhancedInputLocalPlayerSubsystem* Subsystem =
+		ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer());
+	if (!Subsystem)
+	{
+		return;
+	}
+
+	if (!bEnable)
+	{
+		if (RuntimeVehicleControlIMC)
+		{
+			Subsystem->RemoveMappingContext(RuntimeVehicleControlIMC);
+			UE_LOG(LogGalacticPirates, Warning, TEXT("[FighterPilot] Removed vehicle IMC from %s"), *GetNameSafe(this));
+		}
+		return;
+	}
+
+	if (!ShipThrustAction || !ShipVerticalAction || !ShipRotationAction || !ShipRollAction)
+	{
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[FighterPilot] ship input actions missing on %s — C++ fallback keys unavailable"), *GetNameSafe(this));
+		return;
+	}
+
+	if (!RuntimeVehicleControlIMC)
+	{
+		RuntimeVehicleControlIMC = NewObject<UInputMappingContext>(this, TEXT("RuntimeVehicleControlIMC"));
+		auto MapNegated = [this](const UInputAction* Action, const FKey& Key)
+		{
+			FEnhancedActionKeyMapping& Mapping = RuntimeVehicleControlIMC->MapKey(Action, Key);
+			Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(RuntimeVehicleControlIMC));
+		};
+		auto MapToYAxis = [this](const UInputAction* Action, const FKey& Key, bool bNegate)
+		{
+			FEnhancedActionKeyMapping& Mapping = RuntimeVehicleControlIMC->MapKey(Action, Key);
+			Mapping.Modifiers.Add(NewObject<UInputModifierSwizzleAxis>(RuntimeVehicleControlIMC));
+			if (bNegate)
+			{
+				Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(RuntimeVehicleControlIMC));
+			}
+		};
+
+		MapToYAxis(ShipThrustAction, EKeys::W, false);
+		MapToYAxis(ShipThrustAction, EKeys::S, true);
+		MapNegated(ShipThrustAction, EKeys::A);
+		RuntimeVehicleControlIMC->MapKey(ShipThrustAction, EKeys::D);
+
+		MapToYAxis(ShipRotationAction, EKeys::Up, false);
+		MapToYAxis(ShipRotationAction, EKeys::Down, true);
+		MapNegated(ShipRotationAction, EKeys::Left);
+		RuntimeVehicleControlIMC->MapKey(ShipRotationAction, EKeys::Right);
+
+		RuntimeVehicleControlIMC->MapKey(ShipVerticalAction, EKeys::SpaceBar);
+		MapNegated(ShipVerticalAction, EKeys::LeftControl);
+
+		RuntimeVehicleControlIMC->MapKey(ShipRollAction, EKeys::E);
+		MapNegated(ShipRollAction, EKeys::Q);
+	}
+
+	Subsystem->AddMappingContext(RuntimeVehicleControlIMC, 3);
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[FighterPilot] Added vehicle IMC to %s (WASD/arrows) for %s"),
+		*GetNameSafe(this),
+		*GetNameSafe(OccupiedVehicle ? OccupiedVehicle.Get() : BoardedShip));
+}
+
+void AGalacticPiratesCharacter::EnsureNativeShipInputActions()
+{
+	auto EnsureAction = [this](UInputAction*& Action, const TCHAR* Name, EInputActionValueType Type)
+	{
+		if (!Action)
+		{
+			Action = NewObject<UInputAction>(this, Name);
+			Action->ValueType = Type;
+			UE_LOG(LogGalacticPirates, Warning, TEXT("[FighterPilot] created C++ input action %s on %s"), Name, *GetNameSafe(this));
+		}
+	};
+
+	EnsureAction(ShipThrustAction, TEXT("NativeShipThrust"), EInputActionValueType::Axis2D);
+	EnsureAction(ShipVerticalAction, TEXT("NativeShipVertical"), EInputActionValueType::Axis1D);
+	EnsureAction(ShipRotationAction, TEXT("NativeShipRotation"), EInputActionValueType::Axis2D);
+	EnsureAction(ShipRollAction, TEXT("NativeShipRoll"), EInputActionValueType::Axis1D);
+	EnsureAction(ShipInteractAction, TEXT("NativeShipInteract"), EInputActionValueType::Boolean);
+	EnsureAction(MinigunFireAction, TEXT("NativeMinigunFire"), EInputActionValueType::Boolean);
+	EnsureAction(MoveAction, TEXT("NativeMove"), EInputActionValueType::Axis2D);
+	EnsureAction(LookAction, TEXT("NativeLook"), EInputActionValueType::Axis2D);
+	EnsureAction(MouseLookAction, TEXT("NativeMouseLook"), EInputActionValueType::Axis2D);
+	EnsureAction(JumpAction, TEXT("NativeJump"), EInputActionValueType::Boolean);
+}
+
+void AGalacticPiratesCharacter::BindNativeVehicleInput()
+{
+	EnsureNativeShipInputActions();
+	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(InputComponent);
+	if (!EnhancedInputComponent || bNativeVehicleInputBound)
+	{
+		return;
+	}
+
+	EnhancedInputComponent->BindAction(ShipThrustAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::ShipThrustInput);
+	EnhancedInputComponent->BindAction(ShipVerticalAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::ShipVerticalInput);
+	EnhancedInputComponent->BindAction(ShipRotationAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::ShipRotationInput);
+	EnhancedInputComponent->BindAction(ShipRollAction, ETriggerEvent::Triggered, this, &AGalacticPiratesCharacter::ShipRollInput);
+	EnhancedInputComponent->BindAction(ShipInteractAction, ETriggerEvent::Started, this, &AGalacticPiratesCharacter::ShipInteractInput);
+	EnhancedInputComponent->BindAction(MinigunFireAction, ETriggerEvent::Started, this, &AGalacticPiratesCharacter::MinigunFireInput);
+	EnhancedInputComponent->BindAction(MinigunFireAction, ETriggerEvent::Completed, this, &AGalacticPiratesCharacter::MinigunFireInput);
+	bNativeVehicleInputBound = true;
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[FighterPilot] bound C++ vehicle actions on %s"), *GetNameSafe(this));
+}
+
+bool AGalacticPiratesCharacter::IsControlKeyDown(const FKey& Key) const
+{
+	if (SimulatedHeldKeys.Contains(Key))
+	{
+		return true;
+	}
+	if (const APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		return PC->IsInputKeyDown(Key);
+	}
+	return false;
+}
+
+void AGalacticPiratesCharacter::SimulateControlKey(const FKey& Key, bool bPressed)
+{
+	if (bPressed)
+	{
+		SimulatedHeldKeys.Add(Key);
+	}
+	else
+	{
+		SimulatedHeldKeys.Remove(Key);
+	}
+
+	InjectPlaytestKey(Key, bPressed ? IE_Pressed : IE_Released, 1.0f);
+
+	if (Key == EKeys::F && bPressed)
+	{
+		ShipInteractInput(FInputActionValue(true));
+	}
+
+	if (bIsPiloting)
+	{
+		PollHeldVehicleKeys();
+		PollAndSendVehicleInput(true);
+	}
+	else
+	{
+		PollHeldWalkKeys();
+	}
+}
+
+void AGalacticPiratesCharacter::ClearSimulatedControlKeys()
+{
+	SimulatedHeldKeys.Reset();
+	AccumulatedThrustInput = FVector::ZeroVector;
+	AccumulatedRotationInput = FVector::ZeroVector;
+	HelmMouseSteer = FVector2D::ZeroVector;
+}
+
+void AGalacticPiratesCharacter::PollHeldWalkKeys()
+{
+	if (bIsPiloting || OccupiedMinigun || SimulatedHeldKeys.Num() == 0)
+	{
+		return;
+	}
+
+	float Forward = 0.0f;
+	float Right = 0.0f;
+	if (IsControlKeyDown(EKeys::W)) { Forward += 1.0f; }
+	if (IsControlKeyDown(EKeys::S)) { Forward -= 1.0f; }
+	if (IsControlKeyDown(EKeys::D)) { Right += 1.0f; }
+	if (IsControlKeyDown(EKeys::A)) { Right -= 1.0f; }
+	if (!FMath::IsNearlyZero(Forward) || !FMath::IsNearlyZero(Right))
+	{
+		DoMove(Right, Forward);
+	}
+}
+
+void AGalacticPiratesCharacter::PollHeldVehicleKeys()
+{
+	if (!bIsPiloting)
+	{
+		return;
+	}
+
+	FVector Thrust = FVector::ZeroVector;
+	FVector Rotation = FVector::ZeroVector;
+
+	if (IsControlKeyDown(EKeys::W)) { Thrust.X += 1.0f; }
+	if (IsControlKeyDown(EKeys::S)) { Thrust.X -= 1.0f; }
+	if (IsControlKeyDown(EKeys::D)) { Thrust.Y += 1.0f; }
+	if (IsControlKeyDown(EKeys::A)) { Thrust.Y -= 1.0f; }
+	if (IsControlKeyDown(EKeys::SpaceBar) || IsControlKeyDown(EKeys::Gamepad_FaceButton_Bottom)) { Thrust.Z += 1.0f; }
+	if (IsControlKeyDown(EKeys::LeftControl) || IsControlKeyDown(EKeys::LeftAlt)) { Thrust.Z -= 1.0f; }
+
+	if (IsControlKeyDown(EKeys::Up)) { Rotation.Y += 1.0f; }
+	if (IsControlKeyDown(EKeys::Down)) { Rotation.Y -= 1.0f; }
+	if (IsControlKeyDown(EKeys::Right)) { Rotation.Z += 1.0f; }
+	if (IsControlKeyDown(EKeys::Left)) { Rotation.Z -= 1.0f; }
+	if (IsControlKeyDown(EKeys::E) || IsControlKeyDown(EKeys::Gamepad_RightShoulder)) { Rotation.X += 1.0f; }
+	if (IsControlKeyDown(EKeys::Q) || IsControlKeyDown(EKeys::Gamepad_LeftShoulder)) { Rotation.X -= 1.0f; }
+
+	Thrust.X = FMath::Clamp(Thrust.X, -1.0f, 1.0f);
+	Thrust.Y = FMath::Clamp(Thrust.Y, -1.0f, 1.0f);
+	Thrust.Z = FMath::Clamp(Thrust.Z, -1.0f, 1.0f);
+	Rotation.X = FMath::Clamp(Rotation.X, -1.0f, 1.0f);
+	Rotation.Y = FMath::Clamp(Rotation.Y, -1.0f, 1.0f);
+	Rotation.Z = FMath::Clamp(Rotation.Z, -1.0f, 1.0f);
+
+	AccumulatedThrustInput = Thrust;
+	AccumulatedRotationInput = Rotation;
+}
+
+void AGalacticPiratesCharacter::PollAndSendVehicleInput(bool bForceSend)
+{
+	PollHeldVehicleKeys();
+	SendAccumulatedPilotInput(bForceSend);
+}
+
+void AGalacticPiratesCharacter::SimulateMouseSteer(const FVector2D& Delta)
+{
+	ApplyHelmMouseSteer(Delta);
+	SendAccumulatedPilotInput(true);
+}
+
 void AGalacticPiratesCharacter::BoardShip(AWalkableShip* Ship)
 {
 	if (!HasAuthority() || !Ship || Ship->IsWrecked() || bDead)
@@ -467,6 +710,8 @@ void AGalacticPiratesCharacter::BoardShip(AWalkableShip* Ship)
 	}
 
 	OnRep_BoardedShip();
+	LastShipWorldTM = Ship->GetActorTransform();
+	bHasLastShipWorldTM = true;
 	GPShipDebugSnapshot(this, TEXT("BoardShip"));
 
 	if (IsLocallyControlled() && GPInteriorTestEnabled() && !GPIsInteriorWalkTestRunning())
@@ -510,6 +755,7 @@ void AGalacticPiratesCharacter::SetOccupiedVehicle(AActor* Vehicle)
 
 void AGalacticPiratesCharacter::OnRep_OccupiedVehicle()
 {
+	ApplyVehicleControlMapping(OccupiedVehicle != nullptr && bIsPiloting);
 }
 
 void AGalacticPiratesCharacter::SetPiloting(bool bNewPiloting)
@@ -733,11 +979,10 @@ void AGalacticPiratesCharacter::ApplyWreckRagdoll(const FVector& Epicenter)
 
 	if (QuatCameraComponent)
 	{
-		QuatCameraComponent->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
-		QuatCameraComponent->SetUsingAbsoluteLocation(true);
-		QuatCameraComponent->SetUsingAbsoluteRotation(true);
-		QuatCameraComponent->SetVisibility(true);
-		QuatCameraComponent->SetHiddenInGame(false);
+		QuatCameraComponent->SetHiddenInGame(true);
+#if WITH_EDITORONLY_DATA
+		QuatCameraComponent->bCameraMeshHiddenInGame = true;
+#endif
 		QuatCameraComponent->bEnableFirstPersonFieldOfView = false;
 		QuatCameraComponent->bEnableFirstPersonScale = false;
 		QuatCameraComponent->SetComponentTickEnabled(true);
@@ -796,16 +1041,18 @@ void AGalacticPiratesCharacter::ApplyWreckRagdoll(const FVector& Epicenter)
 
 void AGalacticPiratesCharacter::BeginLocalDeathPresentation()
 {
-	APlayerController* PC = Cast<APlayerController>(GetController());
-	if (!PC && GetWorld())
+	if (!IsLocallyControlled())
 	{
-		PC = GetWorld()->GetFirstPlayerController();
+		return;
 	}
-	if (!PC || !PC->IsLocalPlayerController())
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC || !PC->IsLocalPlayerController() || PC->GetPawn() != this)
 	{
-		UE_LOG(LogGalacticPirates, Warning, TEXT("[DeathFX] BeginLocalDeathPresentation skip pc=%s local=%d"),
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[DeathFX] BeginLocalDeathPresentation skip crew=%s pc=%s pawn=%s"),
+			*GetName(),
 			*GetNameSafe(PC),
-			PC && PC->IsLocalPlayerController() ? 1 : 0);
+			*GetNameSafe(PC ? PC->GetPawn() : nullptr));
 		return;
 	}
 
@@ -855,6 +1102,12 @@ void AGalacticPiratesCharacter::UpdateDeathCamera(float DeltaTime)
 		{
 			continue;
 		}
+		if (Prim->IsA(UCameraProxyMeshComponent::StaticClass()) || Prim->IsAttachedTo(QuatCameraComponent))
+		{
+			Prim->SetHiddenInGame(true);
+			Prim->SetVisibility(false);
+			continue;
+		}
 		Prim->SetOwnerNoSee(false);
 		Prim->SetHiddenInGame(false);
 		Prim->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
@@ -878,24 +1131,25 @@ void AGalacticPiratesCharacter::UpdateDeathCamera(float DeltaTime)
 
 	static const FName HeadNames[] = { TEXT("head"), TEXT("Head"), TEXT("CC_Base_Head") };
 	const FName HeadBone = FindBone(HeadNames, UE_ARRAY_COUNT(HeadNames));
-	const FTransform HeadXf = HeadBone.IsNone()
-		? Body->GetComponentTransform()
-		: Body->GetBoneTransform(HeadBone);
+	const FQuat RelRot = FRotator(0.0f, 90.0f, -90.0f).Quaternion() * FRotator(-20.0f, 0.0f, 0.0f).Quaternion();
+	const FVector RelLoc(-2.8f, 5.89f, 0.0f);
 
-	// Same head-socket remap as living first person, then pitch down 20 degrees from face forward.
-	const FQuat FaceQuat = HeadXf.GetRotation() * FRotator(0.0f, 90.0f, -90.0f).Quaternion();
-	const FQuat CamQuat = FaceQuat * FRotator(-20.0f, 0.0f, 0.0f).Quaternion();
-	const FVector CamLoc = HeadXf.GetLocation();
-
-	QuatCameraComponent->SetUsingAbsoluteLocation(true);
-	QuatCameraComponent->SetUsingAbsoluteRotation(true);
-	QuatCameraComponent->SetVisibility(true);
-	QuatCameraComponent->SetHiddenInGame(false);
+	QuatCameraComponent->SetUsingAbsoluteLocation(false);
+	QuatCameraComponent->SetUsingAbsoluteRotation(false);
+	QuatCameraComponent->SetHiddenInGame(true);
+#if WITH_EDITORONLY_DATA
+	QuatCameraComponent->bCameraMeshHiddenInGame = true;
+#endif
 	QuatCameraComponent->bEnableFirstPersonFieldOfView = false;
 	QuatCameraComponent->bEnableFirstPersonScale = false;
 	QuatCameraComponent->FirstPersonScale = 1.0f;
 	QuatCameraComponent->FieldOfView = 90.0f;
-	QuatCameraComponent->SetWorldLocationAndRotation(CamLoc, CamQuat);
+
+	if (QuatCameraComponent->GetAttachParent() != Body || QuatCameraComponent->GetAttachSocketName() != HeadBone)
+	{
+		QuatCameraComponent->AttachToComponent(Body, FAttachmentTransformRules::SnapToTargetNotIncludingScale, HeadBone);
+	}
+	QuatCameraComponent->SetRelativeLocationAndRotation(RelLoc, RelRot);
 }
 
 void AGalacticPiratesCharacter::OnRep_BoardedShip()
@@ -957,16 +1211,19 @@ void AGalacticPiratesCharacter::OnRep_IsPiloting()
 			QuatCameraComponent->ResetOrientation();
 		}
 		FlushHeldShipInputsOnTakeHelm();
+		ApplyVehicleControlMapping(true);
 	}
 	else if (!OccupiedMinigun)
 	{
+		ApplyVehicleControlMapping(false);
 		SetupMovementBaseOnShip();
 	}
 
 	if (!HasAuthority())
 	{
-		UE_LOG(LogGalacticPirates, Warning, TEXT("[DedicatedNet] Client piloting=%s"),
-			bIsPiloting ? TEXT("true") : TEXT("false"));
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[DedicatedNet] Client piloting=%s vehicle=%s"),
+			bIsPiloting ? TEXT("true") : TEXT("false"),
+			*GetNameSafe(OccupiedVehicle));
 	}
 }
 
@@ -1057,6 +1314,12 @@ void AGalacticPiratesCharacter::SetupMovementBaseOnShip()
 	{
 		GPShipDebugEvent(TEXT("SetupMovementBaseOnShip failed: InteriorMesh is null"));
 	}
+
+	if (BoardedShip)
+	{
+		LastShipWorldTM = BoardedShip->GetActorTransform();
+		bHasLastShipWorldTM = true;
+	}
 }
 
 void AGalacticPiratesCharacter::ClearMovementBase()
@@ -1108,6 +1371,11 @@ void AGalacticPiratesCharacter::RestoreWalkingOnShip()
 
 	SetupMovementBaseOnShip();
 	TimeOffShipDeck = 0.0f;
+	if (BoardedShip)
+	{
+		LastShipWorldTM = BoardedShip->GetActorTransform();
+		bHasLastShipWorldTM = true;
+	}
 }
 
 void AGalacticPiratesCharacter::RestoreWalkCamera()
@@ -1128,8 +1396,14 @@ void AGalacticPiratesCharacter::RestoreWalkCamera()
 
 void AGalacticPiratesCharacter::TickBoardedWalkPhysics(float DeltaTime)
 {
-	if (!BoardedShip || OccupiedMinigun)
+	if (!BoardedShip)
 	{
+		return;
+	}
+
+	if (OccupiedMinigun || OccupiedVehicle || bIsPiloting)
+	{
+		bHasLastShipWorldTM = false;
 		return;
 	}
 
@@ -1146,10 +1420,36 @@ void AGalacticPiratesCharacter::TickBoardedWalkPhysics(float DeltaTime)
 	MoveComp->bStayBasedInAir = true;
 	MoveComp->StayBasedInAirHeight = 1000.0f;
 
-	const bool bOnShipFloor = MoveComp->IsMovingOnGround() && BoardedShip->IsWalkableWorldLocation(GetActorLocation());
+	const FTransform ShipTM = BoardedShip->GetActorTransform();
+	if (bHasLastShipWorldTM)
+	{
+		const FVector RelLoc = LastShipWorldTM.InverseTransformPosition(GetActorLocation());
+		const FQuat RelRot = LastShipWorldTM.InverseTransformRotation(GetActorQuat());
+		const FVector NewLoc = ShipTM.TransformPosition(RelLoc);
+		const FQuat NewRot = ShipTM.TransformRotation(RelRot);
+		const float Carry = FVector::Dist(GetActorLocation(), NewLoc);
+		if (Carry > 0.05f && (HasAuthority() || IsLocallyControlled()))
+		{
+			SetActorLocationAndRotation(NewLoc, NewRot, false, nullptr, ETeleportType::None);
+		}
+		if ((GFrameCounter % 15) == 0)
+		{
+			UE_LOG(LogGalacticPirates, Warning,
+				TEXT("[ShipWalk] %s auth=%d net=%d carry=%.1f rel=%s ship=%s"),
+				*GetName(),
+				HasAuthority() ? 1 : 0,
+				static_cast<int32>(GetNetMode()),
+				Carry,
+				*RelLoc.ToCompactString(),
+				*ShipTM.GetLocation().ToCompactString());
+		}
+	}
+	LastShipWorldTM = ShipTM;
+	bHasLastShipWorldTM = true;
+
+	const bool bOnShipFloor = BoardedShip->IsWalkableWorldLocation(GetActorLocation()) || BoardedShip->HasDeckBelow(GetActorLocation(), 400.0f);
 	if (bOnShipFloor)
 	{
-		const FTransform ShipTM = BoardedShip->GetActorTransform();
 		LastGoodShipRelative = FTransform(
 			ShipTM.InverseTransformRotation(GetActorQuat()),
 			ShipTM.InverseTransformPosition(GetActorLocation()));
@@ -1158,21 +1458,29 @@ void AGalacticPiratesCharacter::TickBoardedWalkPhysics(float DeltaTime)
 		return;
 	}
 
-	if (bIsPiloting || OccupiedMinigun)
-	{
-		return;
-	}
-
 	TimeOffShipDeck += DeltaTime;
+	if ((GFrameCounter % 15) == 0)
+	{
+		const FVector Rel = ShipTM.InverseTransformPosition(GetActorLocation());
+		UE_LOG(LogGalacticPirates, Warning,
+			TEXT("[OffDeck] auth=%d local=%d net=%d mode=%d t=%.2f rel=%s world=%s ship=%s"),
+			HasAuthority() ? 1 : 0,
+			IsLocallyControlled() ? 1 : 0,
+			static_cast<int32>(GetNetMode()),
+			static_cast<int32>(MoveComp->MovementMode),
+			TimeOffShipDeck,
+			*Rel.ToCompactString(),
+			*GetActorLocation().ToCompactString(),
+			*BoardedShip->GetActorLocation().ToCompactString());
+	}
 	if (!HasAuthority())
 	{
 		return;
 	}
 
 	const bool bJumping = MoveComp->IsFalling();
-	const float RecoverAfter = bJumping ? 1.25f : 0.12f;
-	const bool bHasDeck = BoardedShip->HasDeckBelow(GetActorLocation(), bJumping ? 800.0f : 400.0f);
-	if (TimeOffShipDeck < RecoverAfter || bHasDeck)
+	const float RecoverAfter = bJumping ? 1.25f : 0.35f;
+	if (TimeOffShipDeck < RecoverAfter)
 	{
 		return;
 	}

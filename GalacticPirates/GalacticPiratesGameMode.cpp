@@ -38,7 +38,7 @@ void AGalacticPiratesGameMode::StartPlay()
 
 	if (AWalkableShip* Ship = AWalkableShip::FindPersistentShip(World))
 	{
-		ABulldogFighter::SpawnNearShip(World, Ship);
+		ABulldogFighter::SpawnDockedOnShip(World, Ship);
 	}
 }
 
@@ -114,7 +114,7 @@ AWalkableShip* AGalacticPiratesGameMode::GetOrSpawnPersistentShip()
 		{
 			Existing->HoloPoi->Kind = EHoloMapPoiKind::OwnShip;
 		}
-		ABulldogFighter::SpawnNearShip(World, Existing);
+		ABulldogFighter::SpawnDockedOnShip(World, Existing);
 		return Existing;
 	}
 
@@ -137,6 +137,6 @@ AWalkableShip* AGalacticPiratesGameMode::GetOrSpawnPersistentShip()
 		Spawned->HoloPoi->Kind = EHoloMapPoiKind::OwnShip;
 	}
 	UE_LOG(LogGalacticPirates, Warning, TEXT("[DedicatedNet] Spawned persistent walkable ship %s"), *GetNameSafe(Spawned));
-	ABulldogFighter::SpawnNearShip(World, Spawned);
+	ABulldogFighter::SpawnDockedOnShip(World, Spawned);
 	return Spawned;
 }

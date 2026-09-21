@@ -2,10 +2,12 @@
 #include "WalkableShip.h"
 #include "GalacticPiratesCharacter.h"
 #include "OccupancyComponent.h"
+#include "SpaceCraft.h"
 #include "HeatseekingMissile.h"
 #include "CombatTypes.h"
 #include "HullHealthComponent.h"
 #include "ShipPolish.h"
+#include "MinigunShot.h"
 #include "GalacticPirates.h"
 #include "Net/UnrealNetwork.h"
 #include "Components/StaticMeshComponent.h"
@@ -150,18 +152,21 @@ void UMinigunPodComponent::BuildRig()
 		SparkLife.Add(0.0f);
 	}
 
-	if (!Occupancy)
+	if (!Occupancy && !bAllowFireWithoutGunner)
 	{
 		Occupancy = NewObject<UOccupancyComponent>(Owner, NameFor(TEXT("Occupancy")));
+		Occupancy->InteractRange = InteractRange;
 	}
-	Occupancy->InteractRange = InteractRange;
-	Occupancy->SetIsReplicated(true);
-	if (Occupancy->GetAttachParent() != this)
+	if (Occupancy)
 	{
-		Attach(Occupancy, this);
+		Occupancy->SetIsReplicated(true);
+		if (Occupancy->GetAttachParent() != this)
+		{
+			Attach(Occupancy, this);
+		}
+		Occupancy->OnOccupancyChanged.RemoveAll(this);
+		Occupancy->OnOccupancyChanged.AddDynamic(this, &UMinigunPodComponent::HandleOccupancyChanged);
 	}
-	Occupancy->OnOccupancyChanged.RemoveAll(this);
-	Occupancy->OnOccupancyChanged.AddDynamic(this, &UMinigunPodComponent::HandleOccupancyChanged);
 }
 
 void UMinigunPodComponent::BeginPlay()
@@ -202,13 +207,18 @@ void UMinigunPodComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 		return;
 	}
 
-	if (OwningShip && OwningShip->IsWrecked() && Gunner)
+	if (GPIsCraftWrecked(GetOwner()))
 	{
-		ForceRelease();
+		if (Gunner)
+		{
+			ForceRelease();
+		}
+		bFiring = false;
+		FireTimer = 0.0f;
 		return;
 	}
 
-	if (!bFiring || !Gunner)
+	if (!bFiring || (!Gunner && !bAllowFireWithoutGunner))
 	{
 		FireTimer = 0.0f;
 		return;
@@ -254,6 +264,13 @@ bool UMinigunPodComponent::TryInteract(AGalacticPiratesCharacter* Character)
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority() || !Character || !Occupancy)
 	{
+		if (GPCombatLogEnabled())
+		{
+			UE_LOG(LogGalacticPirates, Log, TEXT("[Minigun] occupy denied on %s char=%s occ=%s"),
+				*GetNameSafe(GetOwner()),
+				*GetNameSafe(Character),
+				*GetNameSafe(Occupancy));
+		}
 		return false;
 	}
 	if ((OwningShip && OwningShip->IsWrecked()) || Character->IsPiloting())
@@ -267,7 +284,18 @@ bool UMinigunPodComponent::TryInteract(AGalacticPiratesCharacter* Character)
 			Other->ForceRelease();
 		}
 	}
-	return Occupancy->TryOccupy(Character);
+	const bool bOccupied = Occupancy->TryOccupy(Character);
+	if (GPCombatLogEnabled())
+	{
+		UE_LOG(LogGalacticPirates, Log, TEXT("[Minigun] occupy %s by %s inRange=%d result=%d dist=%.0f range=%.0f"),
+			*GetName(),
+			*GetNameSafe(Character),
+			Occupancy->IsInRange(Character) ? 1 : 0,
+			bOccupied ? 1 : 0,
+			FVector::Dist(Character->GetActorLocation(), Occupancy->GetComponentLocation()),
+			Occupancy->InteractRange);
+	}
+	return bOccupied;
 }
 
 void UMinigunPodComponent::ForceRelease()
@@ -420,7 +448,23 @@ void UMinigunPodComponent::AimAtWorldLocation(const FVector& WorldLocation)
 
 void UMinigunPodComponent::SetFiring(bool bNewFiring)
 {
-	bFiring = bNewFiring && Gunner != nullptr;
+	bFiring = bNewFiring && (Gunner != nullptr || bAllowFireWithoutGunner);
+}
+
+bool UMinigunPodComponent::CanFireWeapon() const
+{
+	return GetOwner() && GetOwner()->HasAuthority() && (Gunner != nullptr || bAllowFireWithoutGunner);
+}
+
+bool UMinigunPodComponent::TryFireWeapon(APawn* InstigatorPawn)
+{
+	(void)InstigatorPawn;
+	if (!CanFireWeapon() || GPIsCraftWrecked(GetOwner()))
+	{
+		return false;
+	}
+	FireTrace();
+	return true;
 }
 
 void UMinigunPodComponent::ApplyGunnerCamera()
@@ -495,64 +539,29 @@ float UMinigunPodComponent::DamageForActor(AActor* HitActor) const
 
 void UMinigunPodComponent::FireTrace()
 {
-	UWorld* World = GetWorld();
-	if (!World || !OwningShip)
+	AActor* Craft = GetOwner();
+	if (!Craft)
 	{
 		return;
 	}
 
-	const FVector Start = GetMuzzleLocation();
-	const FVector End = Start + GetMuzzleForward() * TraceRange;
+	FMinigunShotRequest Request;
+	Request.Causer = Craft;
+	Request.Instigator = Gunner ? static_cast<APawn*>(Gunner) : Cast<APawn>(Craft);
+	Request.Start = GetMuzzleLocation();
+	Request.Forward = GetMuzzleForward();
+	Request.Range = TraceRange;
+	Request.Radius = TraceRadius;
+	Request.LightShipDamage = LightShipDamage;
+	Request.MissileDamage = MissileDamage;
 
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(MinigunTrace), false, OwningShip);
-	Params.AddIgnoredActor(OwningShip);
-	if (Gunner)
+	FVector TracerEnd;
+	bool bHit = false;
+	if (!GPFireMinigunShot(Request, TracerEnd, bHit))
 	{
-		Params.AddIgnoredActor(Gunner);
+		return;
 	}
-	for (AGalacticPiratesCharacter* Aboard : OwningShip->GetPlayersAboard())
-	{
-		if (Aboard)
-		{
-			Params.AddIgnoredActor(Aboard);
-		}
-	}
-
-	FHitResult Hit;
-	const bool bHit = World->SweepSingleByChannel(
-		Hit,
-		Start,
-		End,
-		FQuat::Identity,
-		ECC_Visibility,
-		FCollisionShape::MakeSphere(TraceRadius),
-		Params);
-
-	FVector TracerEnd = End;
-	if (bHit)
-	{
-		TracerEnd = Hit.ImpactPoint;
-		AActor* HitActor = Hit.GetActor();
-		if (!HitActor && Hit.GetComponent())
-		{
-			HitActor = Hit.GetComponent()->GetOwner();
-		}
-		if (AHeatseekingMissile* Missile = Cast<AHeatseekingMissile>(HitActor))
-		{
-			Missile->ApplyMinigunHit(MissileDamage, Gunner);
-		}
-		else if (HitActor && HitActor != OwningShip)
-		{
-			FSpaceDamageEvent Event;
-			Event.Amount = LightShipDamage;
-			Event.Kind = ESpaceDamageKind::Ballistic;
-			Event.InstigatorPawn = Gunner;
-			Event.Causer = OwningShip;
-			GPApplySpaceDamage(HitActor, Event);
-		}
-	}
-
-	Multicast_Tracer(Start, TracerEnd, bHit);
+	Multicast_Tracer(Request.Start, TracerEnd, bHit);
 }
 
 void UMinigunPodComponent::Multicast_Tracer_Implementation(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHit)

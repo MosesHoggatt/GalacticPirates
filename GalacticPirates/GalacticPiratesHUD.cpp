@@ -206,11 +206,12 @@ void AGalacticPiratesHUD::DrawFullScreenStatic(float Age, float Width, float Hei
 	const float StaticAlpha = FMath::Clamp((Age - GPDeathStaticAtSeconds) / 0.85f, 0.0f, 1.0f);
 	DrawRect(FLinearColor(0.01f, 0.06f, 0.14f, StaticAlpha), -8.0f, -8.0f, ScreenW + 16.0f, ScreenH + 16.0f);
 
+	const float AnimAge = Age * 0.2f;
 	UTexture2D* FrameA = nullptr;
 	UTexture2D* FrameB = nullptr;
 	if (StaticFrames.Num() > 0)
 	{
-		const int32 FrameIndex = FMath::Abs(FMath::FloorToInt(Age * 12.0f)) % StaticFrames.Num();
+		const int32 FrameIndex = FMath::Abs(FMath::FloorToInt(AnimAge * 12.0f)) % StaticFrames.Num();
 		const int32 AltIndex = (FrameIndex + 3) % StaticFrames.Num();
 		FrameA = StaticFrames[FrameIndex];
 		FrameB = StaticFrames[AltIndex];
@@ -218,8 +219,8 @@ void AGalacticPiratesHUD::DrawFullScreenStatic(float Age, float Width, float Hei
 
 	const float TileU = FMath::Max(ScreenW / 256.0f, 4.0f);
 	const float TileV = FMath::Max(ScreenH / 256.0f, 4.0f);
-	const float JitterX = FMath::Sin(Age * 73.0f) * 48.0f + FMath::Cos(Age * 19.0f) * 22.0f;
-	const float JitterY = FMath::Cos(Age * 61.0f) * 40.0f + FMath::Sin(Age * 27.0f) * 18.0f;
+	const float JitterX = FMath::Sin(AnimAge * 73.0f) * 48.0f + FMath::Cos(AnimAge * 19.0f) * 22.0f;
+	const float JitterY = FMath::Cos(AnimAge * 61.0f) * 40.0f + FMath::Sin(AnimAge * 27.0f) * 18.0f;
 	const float DrawW = ScreenW * 2.2f;
 	const float DrawH = ScreenH * 2.2f;
 	const float BaseX = (ScreenW - DrawW) * 0.5f;
@@ -244,7 +245,7 @@ void AGalacticPiratesHUD::DrawFullScreenStatic(float Age, float Width, float Hei
 
 	if (ScanlineTexture)
 	{
-		const float ScrollV = FMath::Fmod(Age * 6.56f, 1.0f);
+		const float ScrollV = FMath::Fmod(AnimAge * 6.56f, 1.0f);
 		DrawTexture(ScanlineTexture, BaseX, BaseY - 120.0f, DrawW, DrawH + 240.0f, 0.0f, ScrollV, 1.0f, 12.0f,
 			FLinearColor(0.45f, 0.95f, 1.0f, StaticAlpha * 0.55f), BLEND_Translucent);
 	}

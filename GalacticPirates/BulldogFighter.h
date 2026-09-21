@@ -14,13 +14,14 @@ class UHullHealthComponent;
 class UWeaponHardpointComponent;
 class UOccupancyComponent;
 class UShipMissileSalvoComponent;
+class UMinigunMuzzleComponent;
 
 UENUM()
 enum class EBulldogStrafePhase : uint8
 {
-	Approach,
-	Attack,
-	Breakaway
+	Outbound,
+	TurnIn,
+	Strafe
 };
 
 UCLASS()
@@ -50,6 +51,12 @@ public:
 	TObjectPtr<UShipMissileSalvoComponent> MissileSalvo;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UWeaponHardpointComponent> GunHardpoint;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UMinigunMuzzleComponent> NoseGun;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UHoloMapPoiComponent> HoloPoi;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
@@ -68,26 +75,26 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter")
 	bool bEnabled = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack", meta = (ClampMin = "1000.0"))
-	float ApproachDistance = 9000.0f;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack", meta = (ClampMin = "200.0"))
-	float StrafeLateral = 1800.0f;
+	float StrafeLateral = 700.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack")
-	float StrafeHeight = 400.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack", meta = (ClampMin = "500.0"))
-	float PassDistance = 3500.0f;
+	float StrafeHeight = 180.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack", meta = (ClampMin = "0.1"))
-	float FireConeDot = 0.82f;
+	float FireConeDot = 0.88f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack", meta = (ClampMin = "200.0"))
-	float MinFireDistance = 1200.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack", meta = (ClampMin = "0.1"))
+	float MissileAimDot = 0.42f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack", meta = (ClampMin = "50.0"))
+	float MinFireDistance = 200.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack", meta = (ClampMin = "400.0"))
-	float MaxFireDistance = 7200.0f;
+	float MaxFireDistance = 4500.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Attack", meta = (ClampMin = "200.0"))
+	float MissileEngageDistance = 2400.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fighter|Missile", meta = (ClampMin = "100.0"))
 	float MissileLaunchSpeed = 5760.0f;
@@ -119,8 +126,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Fighter")
 	void RegisterHomeCraft(AActor* InHomeCraft);
 
+	UFUNCTION(BlueprintCallable, Category = "Fighter")
+	void DockToHull(AWalkableShip* Host);
+
+	UFUNCTION(BlueprintCallable, Category = "Fighter")
+	void UndockFromHull();
+
+	UFUNCTION(BlueprintPure, Category = "Fighter")
+	bool IsHullDocked() const { return bHullDocked; }
+
 	UFUNCTION(BlueprintPure, Category = "Fighter")
 	AHeatseekingMissile* GetActiveMissile() const { return ActiveMissile.Get(); }
+
+	UFUNCTION(BlueprintPure, Category = "Fighter")
+	EBulldogStrafePhase GetStrafePhase() const { return Phase; }
 
 	virtual UShipMovementComponent* GetSpaceMovement() const override;
 	virtual UHullHealthComponent* GetHullHealth() const override;
@@ -135,6 +154,7 @@ public:
 	virtual bool IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const override;
 
 	static ABulldogFighter* SpawnNearShip(UWorld* World, AWalkableShip* TargetShip);
+	static ABulldogFighter* SpawnDockedOnShip(UWorld* World, AWalkableShip* TargetShip);
 
 protected:
 	virtual void BeginPlay() override;
@@ -142,16 +162,25 @@ protected:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
-	EBulldogStrafePhase Phase = EBulldogStrafePhase::Approach;
+	EBulldogStrafePhase Phase = EBulldogStrafePhase::Outbound;
 	float StrafeSide = 1.0f;
 	float FireCooldownRemaining = 0.0f;
+	float AiLogTimer = 0.0f;
 	FVector RunAimPoint = FVector::ZeroVector;
+	FVector RunAxis = FVector::ForwardVector;
+	FVector RunOffset = FVector::ZeroVector;
 	TWeakObjectPtr<AHeatseekingMissile> ActiveMissile;
 	TWeakObjectPtr<AActor> CachedTarget;
 
+	UPROPERTY(Replicated)
+	bool bHullDocked = false;
+
+	void UpdateNoseGun(AActor* Target, float Dist, float AimDot);
+
 	void TickStrafeAi(float DeltaTime);
-	void SteerToward(const FVector& WorldPoint, const FVector& LookPoint, float ThrottleBoost);
-	void PickNewApproach(AActor* Target);
+	void SteerToward(const FVector& WorldPoint, const FVector& LookPoint, float ThrottleBoost, bool bBrake);
+	void PickNewOutbound(AActor* Target);
+	float GetMapRangeCm() const;
 	FVector GetInheritedLaunchVelocity() const;
 	bool IsPlayerOccupied() const;
 

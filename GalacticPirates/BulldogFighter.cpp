@@ -9,6 +9,7 @@
 #include "HullHealthComponent.h"
 #include "WeaponHardpointComponent.h"
 #include "ShipMissileSalvoComponent.h"
+#include "MinigunMuzzleComponent.h"
 #include "OccupancyComponent.h"
 #include "CraftReplication.h"
 #include "CraftWreck.h"
@@ -18,6 +19,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "HoloMapScanRange.h"
 #include "UObject/ConstructorHelpers.h"
 
 ABulldogFighter::ABulldogFighter()
@@ -56,16 +58,16 @@ ABulldogFighter::ABulldogFighter()
 
 	ShipMovement = CreateDefaultSubobject<UShipMovementComponent>(TEXT("ShipMovement"));
 	ShipMovement->ShipMass = 900.0f;
-	ShipMovement->ForwardThrustPower = 520000.0f;
-	ShipMovement->StrafeThrustPower = 360000.0f;
-	ShipMovement->VerticalThrustPower = 360000.0f;
-	ShipMovement->PitchTorque = 90000.0f;
-	ShipMovement->YawTorque = 110000.0f;
-	ShipMovement->RollTorque = 50000.0f;
-	ShipMovement->MaxLinearVelocity = 5200.0f;
-	ShipMovement->MaxAngularVelocity = 140.0f;
-	ShipMovement->TranslationDampening = 0.18f;
-	ShipMovement->RotationDampening = 0.28f;
+	ShipMovement->ForwardThrustPower = 2400000.0f;
+	ShipMovement->StrafeThrustPower = 900000.0f;
+	ShipMovement->VerticalThrustPower = 900000.0f;
+	ShipMovement->PitchTorque = 48000000.0f;
+	ShipMovement->YawTorque = 81000000.0f;
+	ShipMovement->RollTorque = 24000000.0f;
+	ShipMovement->MaxLinearVelocity = 9000.0f;
+	ShipMovement->MaxAngularVelocity = 480.0f;
+	ShipMovement->TranslationDampening = 0.06f;
+	ShipMovement->RotationDampening = 0.22f;
 
 	HullHealth = CreateDefaultSubobject<UHullHealthComponent>(TEXT("HullHealth"));
 	HullHealth->MaxHealth = 280.0f;
@@ -87,9 +89,20 @@ ABulldogFighter::ABulldogFighter()
 	MissileHardpoint->EquippedWeapon = MissileSalvo;
 	MissileHardpoint->WeaponClass = UShipMissileSalvoComponent::StaticClass();
 
+	GunHardpoint = CreateDefaultSubobject<UWeaponHardpointComponent>(TEXT("GunHardpoint"));
+	GunHardpoint->SetupAttachment(HullMesh);
+	GunHardpoint->SetRelativeLocation(FVector(280.0f, 0.0f, 18.0f));
+
+	NoseGun = CreateDefaultSubobject<UMinigunMuzzleComponent>(TEXT("NoseGun"));
+	NoseGun->SetupAttachment(GunHardpoint);
+	NoseGun->FireInterval = 0.06f;
+	GunHardpoint->EquippedWeapon = NoseGun;
+	GunHardpoint->WeaponClass = UMinigunMuzzleComponent::StaticClass();
+
 	CockpitOccupancy = CreateDefaultSubobject<UOccupancyComponent>(TEXT("CockpitOccupancy"));
 	CockpitOccupancy->SetupAttachment(HullMesh);
-	CockpitOccupancy->InteractRange = 420.0f;
+	CockpitOccupancy->SetRelativeLocation(FVector(-240.0f, 0.0f, 40.0f));
+	CockpitOccupancy->InteractRange = 180.0f;
 
 	HoloPoi = CreateDefaultSubobject<UHoloMapPoiComponent>(TEXT("HoloPoi"));
 	HoloPoi->SetupAttachment(HullMesh);
@@ -244,6 +257,7 @@ void ABulldogFighter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 	DOREPLIFETIME(ABulldogFighter, HomeCraft);
 	DOREPLIFETIME(ABulldogFighter, bWrecked);
 	DOREPLIFETIME(ABulldogFighter, AffiliationId);
+	DOREPLIFETIME(ABulldogFighter, bHullDocked);
 }
 
 void ABulldogFighter::RegisterHomeCraft(AActor* InHomeCraft)
@@ -256,6 +270,52 @@ void ABulldogFighter::RegisterHomeCraft(AActor* InHomeCraft)
 			AffiliationId = Home->GetAffiliationId();
 		}
 	}
+}
+
+void ABulldogFighter::DockToHull(AWalkableShip* Host)
+{
+	if (!Host)
+	{
+		return;
+	}
+
+	RegisterHomeCraft(Host);
+	USceneComponent* Dock = Host->HangarDock ? static_cast<USceneComponent*>(Host->HangarDock) : Host->GetRootComponent();
+	AttachToComponent(Dock, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+	bHullDocked = true;
+	bEnabled = false;
+	if (Collision)
+	{
+		Collision->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+	}
+	if (ShipMovement)
+	{
+		ShipMovement->SetThrustInput(FVector::ZeroVector);
+		ShipMovement->SetRotationInput(FVector::ZeroVector);
+		ShipMovement->SetLinearVelocity(FVector::ZeroVector);
+		ShipMovement->SetAngularVelocity(FVector::ZeroVector);
+	}
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[Hangar] %s docked to %s at %s"),
+		*GetName(),
+		*GetNameSafe(Host),
+		*GetActorLocation().ToCompactString());
+}
+
+void ABulldogFighter::UndockFromHull()
+{
+	if (!bHullDocked && !GetAttachParentActor())
+	{
+		return;
+	}
+
+	const FVector Loc = GetActorLocation();
+	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	bHullDocked = false;
+	if (Collision)
+	{
+		Collision->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
+	}
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[Hangar] %s undocked at %s"), *GetName(), *Loc.ToCompactString());
 }
 
 bool ABulldogFighter::IsPlayerOccupied() const
@@ -274,8 +334,17 @@ void ABulldogFighter::ApplyPilotInput(APawn* Pilot, const FVector& ThrustInput, 
 	{
 		return;
 	}
+	if (bHullDocked)
+	{
+		UndockFromHull();
+	}
 	ShipMovement->SetThrustInput(ThrustInput);
 	ShipMovement->SetRotationInput(RotationInput);
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[FighterPilot] %s thrust=%s rot=%s loc=%s"),
+		*GetName(),
+		*ThrustInput.ToCompactString(),
+		*RotationInput.ToCompactString(),
+		*GetActorLocation().ToCompactString());
 }
 
 void ABulldogFighter::HandleCockpitOccupancy(APawn* NewOccupant, APawn* OldOccupant)
@@ -289,6 +358,11 @@ void ABulldogFighter::HandleCockpitOccupancy(APawn* NewOccupant, APawn* OldOccup
 
 	if (AGalacticPiratesCharacter* NewPilot = Cast<AGalacticPiratesCharacter>(NewOccupant))
 	{
+		UndockFromHull();
+		if (NewPilot->GetBoardedShip())
+		{
+			NewPilot->LeaveShip();
+		}
 		NewPilot->SetOccupiedVehicle(this);
 		NewPilot->SetPiloting(true);
 		NewPilot->AttachToComponent(GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
@@ -298,10 +372,11 @@ void ABulldogFighter::HandleCockpitOccupancy(APawn* NewOccupant, APawn* OldOccup
 			ShipMovement->SetThrustInput(FVector::ZeroVector);
 			ShipMovement->SetRotationInput(FVector::ZeroVector);
 		}
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[FighterPilot] %s entered %s"), *GetNameSafe(NewPilot), *GetName());
 	}
 	else if (!NewOccupant)
 	{
-		bEnabled = true;
+		bEnabled = !bHullDocked;
 	}
 }
 
@@ -313,6 +388,10 @@ void ABulldogFighter::HandleHullDestroyed()
 	}
 	bWrecked = true;
 	bEnabled = false;
+	if (NoseGun)
+	{
+		NoseGun->SetFiring(false);
+	}
 	GPBeginCraftWreck(this, 4.0f);
 }
 
@@ -345,7 +424,12 @@ bool ABulldogFighter::FireSeekingMissile(AActor* Target)
 	return ActiveMissile.IsValid();
 }
 
-void ABulldogFighter::PickNewApproach(AActor* Target)
+float ABulldogFighter::GetMapRangeCm() const
+{
+	return GPHoloMapScanRangeCm();
+}
+
+void ABulldogFighter::PickNewOutbound(AActor* Target)
 {
 	if (!Target)
 	{
@@ -353,17 +437,24 @@ void ABulldogFighter::PickNewApproach(AActor* Target)
 	}
 
 	StrafeSide *= -1.0f;
-	const FVector TargetFwd = Target->GetActorForwardVector();
-	const FVector TargetRight = Target->GetActorRightVector();
-	const FVector TargetUp = Target->GetActorUpVector();
-	RunAimPoint = Target->GetActorLocation()
-		- TargetFwd * ApproachDistance
-		+ TargetRight * (StrafeLateral * StrafeSide)
-		+ TargetUp * StrafeHeight;
-	Phase = EBulldogStrafePhase::Approach;
+	const FVector TargetLoc = Target->GetActorLocation();
+	FVector Away = (GetActorLocation() - TargetLoc).GetSafeNormal();
+	if (Away.IsNearlyZero())
+	{
+		Away = Target->GetActorRightVector() * StrafeSide;
+	}
+	FVector Right = FVector::CrossProduct(Target->GetActorUpVector(), Away).GetSafeNormal();
+	if (Right.IsNearlyZero())
+	{
+		Right = Target->GetActorRightVector();
+	}
+	RunAxis = Away;
+	RunOffset = Right * (StrafeLateral * StrafeSide) + Target->GetActorUpVector() * StrafeHeight;
+	RunAimPoint = TargetLoc + Away * GetMapRangeCm();
+	Phase = EBulldogStrafePhase::Outbound;
 }
 
-void ABulldogFighter::SteerToward(const FVector& WorldPoint, const FVector& LookPoint, float ThrottleBoost)
+void ABulldogFighter::SteerToward(const FVector& WorldPoint, const FVector& LookPoint, float ThrottleBoost, bool bBrake)
 {
 	if (!ShipMovement)
 	{
@@ -384,19 +475,46 @@ void ABulldogFighter::SteerToward(const FVector& WorldPoint, const FVector& Look
 	}
 
 	const FVector LocalLook = GetActorQuat().UnrotateVector(LookDir);
-	const float Yaw = FMath::Clamp(FMath::Atan2(LocalLook.Y, LocalLook.X) / (PI * 0.28f), -1.0f, 1.0f);
+	const float Yaw = FMath::Clamp(FMath::Atan2(LocalLook.Y, LocalLook.X) / (PI * 0.22f), -1.0f, 1.0f);
 	const float Horizontal = FMath::Sqrt(LocalLook.X * LocalLook.X + LocalLook.Y * LocalLook.Y);
-	const float Pitch = FMath::Clamp(FMath::Atan2(-LocalLook.Z, Horizontal) / (PI * 0.28f), -1.0f, 1.0f);
+	const float Pitch = FMath::Clamp(FMath::Atan2(-LocalLook.Z, Horizontal) / (PI * 0.22f), -1.0f, 1.0f);
 	const FVector LocalRight = GetActorQuat().UnrotateVector(DesiredDir);
 	const float Roll = FMath::Clamp(LocalRight.Y * 0.35f, -1.0f, 1.0f);
 
 	FVector LocalThrust = GetActorQuat().UnrotateVector(DesiredDir);
-	LocalThrust.X = FMath::Clamp(LocalThrust.X + ThrottleBoost, -1.0f, 1.0f);
+	if (bBrake)
+	{
+		const FVector LocalVel = GetActorQuat().UnrotateVector(GetCraftVelocity());
+		const float Speed = LocalVel.Size();
+		if (Speed > 250.0f)
+		{
+			LocalThrust = -LocalVel / Speed;
+		}
+	}
+	else
+	{
+		LocalThrust.X = FMath::Clamp(LocalThrust.X + ThrottleBoost, -1.0f, 1.0f);
+	}
+	LocalThrust.X = FMath::Clamp(LocalThrust.X, -1.0f, 1.0f);
 	LocalThrust.Y = FMath::Clamp(LocalThrust.Y, -1.0f, 1.0f);
 	LocalThrust.Z = FMath::Clamp(LocalThrust.Z, -1.0f, 1.0f);
 
 	ShipMovement->SetThrustInput(LocalThrust);
 	ShipMovement->SetRotationInput(FVector(Roll, Pitch, Yaw));
+}
+
+void ABulldogFighter::UpdateNoseGun(AActor* Target, float Dist, float AimDot)
+{
+	if (!NoseGun)
+	{
+		return;
+	}
+
+	const bool bAimed = Target
+		&& Dist <= MaxFireDistance
+		&& AimDot >= FireConeDot
+		&& !IsCraftWrecked();
+	NoseGun->SetFiring(bAimed);
 }
 
 void ABulldogFighter::TickStrafeAi(float DeltaTime)
@@ -405,9 +523,10 @@ void ABulldogFighter::TickStrafeAi(float DeltaTime)
 	CachedTarget = Target;
 	if (!Target)
 	{
+		UpdateNoseGun(nullptr, 0.0f, 0.0f);
 		if (ShipMovement)
 		{
-			ShipMovement->SetThrustInput(FVector(0.15f, 0.0f, 0.0f));
+			ShipMovement->SetThrustInput(FVector(0.35f, 0.0f, 0.0f));
 			ShipMovement->SetRotationInput(FVector::ZeroVector);
 		}
 		return;
@@ -419,52 +538,92 @@ void ABulldogFighter::TickStrafeAi(float DeltaTime)
 	const float Dist = ToTarget.Size();
 	const FVector ToTargetDir = ToTarget.GetSafeNormal();
 	const float AimDot = FVector::DotProduct(GetActorForwardVector(), ToTargetDir);
+	const float MapRange = GetMapRangeCm();
+	UpdateNoseGun(Target, Dist, AimDot);
 
-	if (Phase == EBulldogStrafePhase::Approach)
+	AiLogTimer -= DeltaTime;
+	if (AiLogTimer <= 0.0f)
+	{
+		AiLogTimer = 0.25f;
+		const TCHAR* PhaseName = TEXT("Outbound");
+		if (Phase == EBulldogStrafePhase::TurnIn)
+		{
+			PhaseName = TEXT("TurnIn");
+		}
+		else if (Phase == EBulldogStrafePhase::Strafe)
+		{
+			PhaseName = TEXT("Strafe");
+		}
+		UE_LOG(LogGalacticPirates, Warning,
+			TEXT("[BulldogAi] %s phase=%s dist=%.0f map=%.0f speed=%.0f out=%.0f aim=%.2f"),
+			*GetName(),
+			PhaseName,
+			Dist,
+			MapRange,
+			GetCraftVelocity().Size(),
+			FVector::DotProduct(GetCraftVelocity(), -ToTargetDir),
+			AimDot);
+	}
+
+	const float OutboundSpeed = FVector::DotProduct(GetCraftVelocity(), -ToTargetDir);
+
+	if (Phase == EBulldogStrafePhase::Outbound)
 	{
 		if (RunAimPoint.IsNearlyZero())
 		{
-			PickNewApproach(Target);
+			PickNewOutbound(Target);
 		}
 
-		SteerToward(RunAimPoint, TargetLoc, 0.55f);
-		if (FVector::Dist(SelfLoc, RunAimPoint) < 900.0f || (Dist < MaxFireDistance && AimDot > 0.55f))
+		const FVector EdgePoint = TargetLoc + RunAxis * MapRange;
+		const bool bNearEdge = Dist >= MapRange * 0.86f || (Dist >= MapRange * 0.70f && OutboundSpeed < 900.0f);
+		SteerToward(EdgePoint, EdgePoint, Dist > MapRange * 0.55f ? 0.0f : 1.0f, Dist >= MapRange * 0.70f);
+		if (bNearEdge)
 		{
-			Phase = EBulldogStrafePhase::Attack;
-			RunAimPoint = TargetLoc + Target->GetActorForwardVector() * PassDistance
-				+ Target->GetActorRightVector() * (StrafeLateral * StrafeSide * 0.25f);
+			Phase = EBulldogStrafePhase::TurnIn;
+			UE_LOG(LogGalacticPirates, Warning, TEXT("[BulldogAi] %s reached map edge dist=%.0f speedOut=%.0f — hard turn"), *GetName(), Dist, OutboundSpeed);
 		}
 		return;
 	}
 
-	if (Phase == EBulldogStrafePhase::Attack)
+	if (Phase == EBulldogStrafePhase::TurnIn)
 	{
-		SteerToward(RunAimPoint, TargetLoc, 0.85f);
-		if (CanFireMissile()
-			&& Dist >= MinFireDistance
-			&& Dist <= MaxFireDistance
-			&& AimDot >= FireConeDot)
+		FVector WorldPull = ToTargetDir * 1.6f;
+		FVector LocalThrust = GetActorQuat().UnrotateVector(WorldPull);
+		LocalThrust.X = FMath::Clamp(LocalThrust.X, -1.0f, 1.0f);
+		LocalThrust.Y = FMath::Clamp(LocalThrust.Y, -1.0f, 1.0f);
+		LocalThrust.Z = FMath::Clamp(LocalThrust.Z, -1.0f, 1.0f);
+		const FVector LocalLook = GetActorQuat().UnrotateVector(ToTargetDir);
+		const float Yaw = FMath::Clamp(FMath::Atan2(LocalLook.Y, LocalLook.X) / (PI * 0.10f), -1.0f, 1.0f);
+		const float Horizontal = FMath::Sqrt(LocalLook.X * LocalLook.X + LocalLook.Y * LocalLook.Y);
+		const float Pitch = FMath::Clamp(FMath::Atan2(-LocalLook.Z, Horizontal) / (PI * 0.10f), -1.0f, 1.0f);
+		if (ShipMovement)
 		{
-			FireSeekingMissile(Target);
+			ShipMovement->SetThrustInput(LocalThrust);
+			ShipMovement->SetRotationInput(FVector(0.0f, Pitch, Yaw));
 		}
-
-		const bool bPassed = FVector::DotProduct(GetActorForwardVector(), ToTargetDir) < 0.05f
-			|| FVector::Dist(SelfLoc, RunAimPoint) < 700.0f;
-		if (bPassed)
+		if (AimDot >= 0.55f)
 		{
-			Phase = EBulldogStrafePhase::Breakaway;
-			RunAimPoint = SelfLoc
-				+ GetActorForwardVector() * 2800.0f
-				+ GetActorUpVector() * 1600.0f
-				+ GetActorRightVector() * (StrafeSide * 2200.0f);
+			Phase = EBulldogStrafePhase::Strafe;
+			RunAimPoint = TargetLoc + RunOffset;
+			UE_LOG(LogGalacticPirates, Warning, TEXT("[BulldogAi] %s turned in aim=%.2f dist=%.0f speedOut=%.0f — strafe"), *GetName(), AimDot, Dist, OutboundSpeed);
 		}
 		return;
 	}
 
-	SteerToward(RunAimPoint, RunAimPoint + GetActorForwardVector() * 500.0f, 0.4f);
-	if (FVector::Dist(SelfLoc, RunAimPoint) < 900.0f || Dist > ApproachDistance * 0.85f)
+	SteerToward(TargetLoc + RunOffset, TargetLoc, AimDot > 0.35f ? 1.0f : 0.0f, false);
+	if (CanFireMissile()
+		&& Dist >= MinFireDistance
+		&& Dist <= MissileEngageDistance
+		&& (AimDot >= MissileAimDot || Dist <= 1800.0f))
 	{
-		PickNewApproach(Target);
+		FireSeekingMissile(Target);
+	}
+
+	const bool bPassed = OutboundSpeed > 250.0f && Dist < MapRange * 0.35f && AimDot < 0.20f;
+	if (bPassed)
+	{
+		UE_LOG(LogGalacticPirates, Warning, TEXT("[BulldogAi] %s finished strafe dist=%.0f — outbound again"), *GetName(), Dist);
+		PickNewOutbound(Target);
 	}
 }
 
@@ -477,9 +636,17 @@ void ABulldogFighter::Tick(float DeltaTime)
 	}
 
 	FireCooldownRemaining = FMath::Max(0.0f, FireCooldownRemaining - DeltaTime);
+	if (bHullDocked)
+	{
+		return;
+	}
 	if (bEnabled && !IsPlayerOccupied())
 	{
 		TickStrafeAi(DeltaTime);
+	}
+	else if (NoseGun)
+	{
+		NoseGun->SetFiring(false);
 	}
 }
 
@@ -515,9 +682,9 @@ ABulldogFighter* ABulldogFighter::SpawnNearShip(UWorld* World, AWalkableShip* Ta
 	}
 
 	const FVector SpawnLoc = TargetShip->GetActorLocation()
-		+ TargetShip->GetActorForwardVector() * 11000.0f
-		+ TargetShip->GetActorRightVector() * 4200.0f
-		+ TargetShip->GetActorUpVector() * 800.0f;
+		+ TargetShip->GetActorForwardVector() * 2800.0f
+		+ TargetShip->GetActorRightVector() * 900.0f
+		+ TargetShip->GetActorUpVector() * 400.0f;
 	const FRotator SpawnRot = (-TargetShip->GetActorForwardVector()).Rotation();
 
 	FActorSpawnParameters Params;
@@ -528,6 +695,41 @@ ABulldogFighter* ABulldogFighter::SpawnNearShip(UWorld* World, AWalkableShip* Ta
 		Fighter->RegisterHomeCraft(TargetShip);
 	}
 	UE_LOG(LogGalacticPirates, Warning, TEXT("[Bulldog] spawned %s near %s"),
+		*GetNameSafe(Fighter),
+		*GetNameSafe(TargetShip));
+	return Fighter;
+}
+
+ABulldogFighter* ABulldogFighter::SpawnDockedOnShip(UWorld* World, AWalkableShip* TargetShip)
+{
+	if (!World || !TargetShip)
+	{
+		return nullptr;
+	}
+
+	for (TActorIterator<ABulldogFighter> It(World); It; ++It)
+	{
+		ABulldogFighter* Existing = *It;
+		if (Existing && Existing->GetHomeCraft() == TargetShip)
+		{
+			if (!Existing->IsHullDocked() && !Existing->HasHumanOccupant())
+			{
+				Existing->DockToHull(TargetShip);
+			}
+			return Existing;
+		}
+	}
+
+	USceneComponent* Dock = TargetShip->HangarDock ? static_cast<USceneComponent*>(TargetShip->HangarDock) : TargetShip->GetRootComponent();
+	const FTransform DockTM = Dock ? Dock->GetComponentTransform() : TargetShip->GetActorTransform();
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ABulldogFighter* Fighter = World->SpawnActor<ABulldogFighter>(DockTM.GetLocation(), DockTM.Rotator(), Params);
+	if (Fighter)
+	{
+		Fighter->DockToHull(TargetShip);
+	}
+	UE_LOG(LogGalacticPirates, Warning, TEXT("[Hangar] spawned docked %s on %s"),
 		*GetNameSafe(Fighter),
 		*GetNameSafe(TargetShip));
 	return Fighter;
