@@ -249,6 +249,7 @@ protected:
 	virtual void NotifyControllerChanged() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual void Destroyed() override;
+	virtual void FellOutOfWorld(const UDamageType& DmgType) override;
 
 	/** Called when the boarded ship is replicated */
 	UFUNCTION()

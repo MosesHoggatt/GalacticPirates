@@ -101,7 +101,7 @@ AGalacticPiratesCharacter* UShipCrewAiComponent::SpawnCrewMember(const TCHAR* Na
 	}
 
 	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr,
-		TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+		TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!CharacterClass)
 	{
 		UE_LOG(LogGalacticPirates, Error, TEXT("[CrewAI] Missing BP_FirstPersonCharacter"));
