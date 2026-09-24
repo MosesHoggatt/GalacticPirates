@@ -1,0 +1,14 @@
+---
+description: Canonical spacecraft combat and movement stacks for Galactic Pirates.
+alwaysApply: true
+---
+
+# Spacecraft foundation
+
+- Movement: `UShipMovementComponent` only. Do not add or revive `UStarshipMovementComponent` / SpaceBattleSimulator in game or editor targets.
+- Health: `UHullHealthComponent` + `FSpaceDamageEvent`. Do not add a second hull HP pool on ships, fighters, or missiles.
+- Vehicles: `AWalkableShip` and `ABulldogFighter` stay separate actors; share `ISpaceCraft`. Do not retune existing thrust/mass/dampening defaults unless asked.
+- Weapons: mount on `UWeaponHardpointComponent` / `UWeaponComponent`. Do not Cast-only to `AWalkableShip` for damage, homing, or AI targeting when `ISpaceCraft` works.
+- Occupancy: `UOccupancyComponent` is physical range + empty seat + not wrecked. Affiliation and home-craft are friend/foe tags only; never gate boarding, cockpit entry, or station use.
+- Networking: one dedicated server. Apply `GPCraftNet` profiles; do not set `bAlwaysRelevant` on ships, fighters, missiles, or crew. Same-craft `IsNetRelevantFor` keeps co-located crew in relevancy. Unreliable pilot input is sequenced (drop stale). Wrecks go net-dormant.
+- Wrecks: `GPBeginCraftWreck` plus hull destroy. Hangars and loot-stat generation are deferred. Combat logs go behind `gp.CombatLog`.

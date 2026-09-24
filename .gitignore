@@ -1,0 +1,49 @@
+# Unreal Engine
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+.vscode/
+.vs/
+.vsconfig
+*.opensdf
+*.sdf
+*.suo
+*.user
+*.userprefs
+*.log
+*.log.*
+*.pdb
+*.idb
+*.cache
+*.db
+.DS_Store
+Thumbs.db
+
+# Visual Studio / generated project files
+*.sln
+*.slnx
+*.VC.db
+*.VC.VC.opendb
+*.ilk
+*.obj
+*.exe
+*.dll
+*.lib
+
+# Rider
+.idea/
+
+# Temp
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.orig
+
+# Cursor local
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**

@@ -1,0 +1,27 @@
+Orbitron (SIL Open Font License 1.1) — sci-fi display font for death UI
+https://fonts.google.com/specimen/Orbitron
+https://github.com/google/fonts/tree/main/ofl/orbitron
+
+Share Tech Mono (SIL Open Font License 1.1) — fallback terminal font
+https://fonts.google.com/specimen/Share+Tech+Mono
+https://github.com/google/fonts/tree/main/ofl/sharetechmono
+
+TV static / scanline PNGs in Polish/Textures are original project assets released as CC0 1.0.
+
+Third-party polish assets for Galactic Pirates
+
+Kenney.nl (CC0 1.0) — UI, particle sprites, impact/metal Foley
+https://kenney.nl
+Commercial use allowed. Attribution is not required.
+
+OpenGameArt / rubberduck — sparkling fireball effect (CC0 1.0)
+https://opengameart.org/content/sparkling-fireball-effect
+
+OpenGameArt / Sinestesia — 2D explosion animations (CC0 1.0)
+https://opengameart.org/content/2d-explosion-animations-frame-by-frame
+
+OpenGameArt / rubberduck — 50 CC0 Sci-Fi SFX and 60 CC0 Sci-Fi SFX (CC0 1.0)
+https://opengameart.org/content/50-cc0-sci-fi-sfx
+https://opengameart.org/content/60-cc0-sci-fi-sfx
+
+Combat beds are mixed from rubberduck sci-fi SFX plus Kenney Impact Sounds (metal/plate hits) toward a heavier, less cartoon mix.
