@@ -20,7 +20,7 @@ AGalacticPiratesGameMode::AGalacticPiratesGameMode()
 	bUseSeamlessTravel = true;
 	HUDClass = AGalacticPiratesHUD::StaticClass();
 
-	static ConstructorHelpers::FClassFinder<AWalkableShip> ShipBP(TEXT("/Game/Ships/Debug/BP_DebugWalkableShip"));
+	static ConstructorHelpers::FClassFinder<AWalkableShip> ShipBP(TEXT("/Game/Ships/Blockout/BP_DebugWalkableShip"));
 	if (ShipBP.Succeeded())
 	{
 		DefaultWalkableShipClass = ShipBP.Class;
@@ -121,7 +121,7 @@ AWalkableShip* AGalacticPiratesGameMode::GetOrSpawnPersistentShip()
 	UClass* ShipClass = DefaultWalkableShipClass;
 	if (!ShipClass)
 	{
-		ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+		ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Blockout/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
 	}
 	if (!ShipClass)
 	{

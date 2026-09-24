@@ -27,7 +27,7 @@ namespace
 {
 	UClass* GPTestCharacterClass()
 	{
-		return LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+		return LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	}
 
 	AGalacticPiratesCharacter* GPSpawnCrew(UWorld* World, const FVector& Location)
@@ -716,7 +716,7 @@ bool FGPHangarDockDetachAndFly::RunTest(const FString& Parameters)
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	UClass* BlockoutClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	UClass* BlockoutClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Blockout/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
 	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(
 		BlockoutClass ? BlockoutClass : AWalkableShip::StaticClass(),
 		FVector::ZeroVector,
@@ -798,7 +798,7 @@ bool FGPHangarWalkAndPilotInputs::RunTest(const FString& Parameters)
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	UClass* BlockoutClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	UClass* BlockoutClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Blockout/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
 	AWalkableShip* Ship = World->SpawnActor<AWalkableShip>(
 		BlockoutClass ? BlockoutClass : AWalkableShip::StaticClass(),
 		FVector::ZeroVector,

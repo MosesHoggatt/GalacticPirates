@@ -35,13 +35,13 @@ ABulldogFighter::ABulldogFighter()
 	HullMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	HullMesh->SetMobility(EComponentMobility::Movable);
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> MeshFinder(TEXT("/Game/Blueprints/Spaceships/Models/A-53Bulldog"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> MeshFinder(TEXT("/Game/Ships/Fighters/Meshes/A-53Bulldog"));
 	if (MeshFinder.Succeeded())
 	{
 		HullMesh->SetStaticMesh(MeshFinder.Object);
 	}
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatFinder(TEXT("/Game/Blueprints/Spaceships/Models/Materials/A-53Bulldog_MaterialInstance"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatFinder(TEXT("/Game/Ships/Fighters/Materials/A-53Bulldog_MaterialInstance"));
 	if (MatFinder.Succeeded())
 	{
 		HullMesh->SetMaterial(0, MatFinder.Object);

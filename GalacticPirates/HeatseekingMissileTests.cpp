@@ -227,7 +227,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPMinigunPodsAreWalkable, "GalacticPirates.Min
 
 bool FGPMinigunPodsAreWalkable::RunTest(const FString& Parameters)
 {
-	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Blockout/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
 	if (!TestNotNull(TEXT("debug ship blueprint"), ShipClass))
 	{
 		return false;
@@ -285,7 +285,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPMinigunShotHasFeedback, "GalacticPirates.Min
 bool FGPMinigunShotHasFeedback::RunTest(const FString& Parameters)
 {
 	// The game spawns the blueprint, not the raw C++ class, so test what the player actually flies.
-	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Blockout/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
 	if (!TestNotNull(TEXT("debug ship blueprint"), ShipClass))
 	{
 		return false;
@@ -365,8 +365,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPMinigunCameraFollowsAim, "GalacticPirates.Mi
 
 bool FGPMinigunCameraFollowsAim::RunTest(const FString& Parameters)
 {
-	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
-	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Blockout/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!TestNotNull(TEXT("debug ship blueprint"), ShipClass) || !TestNotNull(TEXT("character blueprint"), CharacterClass))
 	{
 		return false;
@@ -461,8 +461,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPEnemyShipCrewsStations, "GalacticPirates.Cre
 
 bool FGPEnemyShipCrewsStations::RunTest(const FString& Parameters)
 {
-	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
-	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	UClass* ShipClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Blockout/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!TestNotNull(TEXT("ship class"), ShipClass) || !TestNotNull(TEXT("character class"), CharacterClass))
 	{
 		return false;
@@ -613,7 +613,7 @@ bool FGPShipMoveProbe::RunTest(const FString& Parameters)
 	AWalkableShip* NativeShip = World->SpawnActor<AWalkableShip>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
 	Ships.Add(NativeShip);
 
-	UClass* BpClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Debug/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
+	UClass* BpClass = LoadClass<AWalkableShip>(nullptr, TEXT("/Game/Ships/Blockout/BP_DebugWalkableShip.BP_DebugWalkableShip_C"));
 	if (BpClass)
 	{
 		AWalkableShip* BpShip = Cast<AWalkableShip>(World->SpawnActor<AActor>(BpClass, FVector(0.0f, 4000.0f, 0.0f), FRotator::ZeroRotator, SpawnParams));
@@ -686,7 +686,7 @@ bool FGPShipMoveProbe::RunTest(const FString& Parameters)
 		Ship->ShipMovement->SetAngularVelocity(FVector::ZeroVector);
 
 		AGalacticPiratesCharacter* Pilot = nullptr;
-		UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+		UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 		if (CharacterClass)
 		{
 			Pilot = Cast<AGalacticPiratesCharacter>(World->SpawnActor<AActor>(CharacterClass, Ship->GetActorLocation() + FVector(0.0f, 0.0f, 120.0f), FRotator::ZeroRotator, SpawnParams));
@@ -859,7 +859,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPOccupancyIgnoresAffiliation, "GalacticPirate
 
 bool FGPOccupancyIgnoresAffiliation::RunTest(const FString& Parameters)
 {
-	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!TestNotNull(TEXT("character class"), CharacterClass))
 	{
 		return false;
@@ -928,7 +928,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPCraftWreckBlocksOccupancy, "GalacticPirates.
 
 bool FGPCraftWreckBlocksOccupancy::RunTest(const FString& Parameters)
 {
-	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!TestNotNull(TEXT("character class"), CharacterClass))
 	{
 		return false;
@@ -1020,7 +1020,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPStationsShareOccupancy, "GalacticPirates.Cra
 
 bool FGPStationsShareOccupancy::RunTest(const FString& Parameters)
 {
-	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!TestNotNull(TEXT("character class"), CharacterClass))
 	{
 		return false;
@@ -1063,7 +1063,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPHostileFighterOccupyIsAllowed, "GalacticPira
 
 bool FGPHostileFighterOccupyIsAllowed::RunTest(const FString& Parameters)
 {
-	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!TestNotNull(TEXT("character class"), CharacterClass))
 	{
 		return false;
@@ -1218,7 +1218,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPBulldogStrafeWhizMissileAndGun, "GalacticPir
 
 bool FGPBulldogStrafeWhizMissileAndGun::RunTest(const FString& Parameters)
 {
-	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!TestNotNull(TEXT("character class"), CharacterClass))
 	{
 		return false;
@@ -1291,7 +1291,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPBulldogGunSilentWhenNotAimed, "GalacticPirat
 
 bool FGPBulldogGunSilentWhenNotAimed::RunTest(const FString& Parameters)
 {
-	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!TestNotNull(TEXT("character class"), CharacterClass))
 	{
 		return false;
@@ -1330,7 +1330,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGPBulldogMapEdgeTurnAndStrafe, "GalacticPirate
 
 bool FGPBulldogMapEdgeTurnAndStrafe::RunTest(const FString& Parameters)
 {
-	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	UClass* CharacterClass = LoadClass<AGalacticPiratesCharacter>(nullptr, TEXT("/Game/_Template/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
 	if (!TestNotNull(TEXT("character class"), CharacterClass))
 	{
 		return false;
